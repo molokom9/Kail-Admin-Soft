@@ -1,14 +1,10 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 import os
 import sys
 import subprocess
 import time
 import platform
 import importlib
-
-# =============================================================
-#  BOOT LOADER — Kail Admin
-# =============================================================
 
 class _ANSI:
     RESET   = '\033[0m'
@@ -123,9 +119,9 @@ def _boot_loader():
 
 _boot_loader()
 
-# =============================================================
+
 #  ОСНОВНОЙ КОД
-# =============================================================
+
 
 import signal
 import atexit
