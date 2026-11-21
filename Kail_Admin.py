@@ -1,224 +1,253 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Kail Admin — менеджер Telegram-ботов (Linux + Windows).
+
+Положи файл в папку с ботами (*.py) и запусти:  python3 kail_admin.py  (Windows: python kail_admin.py)
+"""
+
 import os
 import sys
-import subprocess
+import re
+import ast
+import glob
+import json
 import time
-import platform
-import importlib
-
-class _ANSI:
-    RESET   = '\033[0m'
-    RED     = '\033[91m'
-    GREEN   = '\033[92m'
-    YELLOW  = '\033[93m'
-    BLUE    = '\033[94m'
-    MAGENTA = '\033[95m'
-    CYAN    = '\033[96m'
-    WHITE   = '\033[97m'
-    BOLD    = '\033[1m'
-    DIM     = '\033[2m'
-
-
-def _enable_windows_ansi():
-    if platform.system() == 'Windows':
-        try:
-            import ctypes
-            k = ctypes.windll.kernel32
-            k.SetConsoleMode(k.GetStdHandle(-11), 7)
-        except Exception:
-            pass
-
-
-def _clear():
-    os.system('cls' if platform.system() == 'Windows' else 'clear')
-
-
-def _boot_sequence():
-    A = _ANSI
-    import random as _r
-    _clear()
-    lines = [
-        (f"{A.GREEN}[BOOT]{A.RESET} Kail Admin OS initializing...", 0.012),
-        (f"{A.GREEN}[BOOT]{A.RESET} Kernel: Python {platform.python_version()}", 0.012),
-        (f"{A.GREEN}[BOOT]{A.RESET} Platform: {platform.system()} {platform.release()}", 0.012),
-        (f"{A.GREEN}[BOOT]{A.RESET} Arch: {platform.machine()}   Host: {platform.node()}", 0.012),
-        (f"{A.YELLOW}[SCAN]{A.RESET} Checking system integrity...", 0.03),
-        (f"{A.YELLOW}[SCAN]{A.RESET} Mounting virtual filesystem...", 0.02),
-        (f"{A.YELLOW}[SCAN]{A.RESET} Loading security modules...", 0.025),
-        (f"{A.GREEN}[ OK ]{A.RESET} Security handshake complete", 0.012),
-        (f"{A.CYAN}[NET ]{A.RESET} Establishing local socket...", 0.02),
-        (f"{A.GREEN}[ OK ]{A.RESET} Connection secured", 0.012),
-        (f"{A.MAGENTA}[CORE]{A.RESET} Decrypting kernel modules...", 0.025),
-        (f"{A.GREEN}[ OK ]{A.RESET} Handshake with matrix successful", 0.015),
-    ]
-    for text, d in lines:
-        print(text); time.sleep(d)
-    for _ in range(6):
-        row = ''.join(_r.choice('01') for _ in range(64))
-        print(f"{A.GREEN}{row}{A.RESET}"); time.sleep(0.02)
-    time.sleep(0.1)
-    _clear()
-
-
-def _scan_bar(package, import_name=None):
-    A = _ANSI
-    if import_name is None:
-        import_name = package
-    bar_len = 28
-    prefix = f"{A.YELLOW}[SCAN]{A.RESET} {package:<10}"
-    for i in range(bar_len + 1):
-        sys.stdout.write(f"\r{prefix} [{A.GREEN}{'█' * i}{A.DIM}{'░' * (bar_len - i)}{A.RESET}]")
-        sys.stdout.flush(); time.sleep(0.01)
-    try:
-        __import__(import_name)
-        sys.stdout.write(f"\r{prefix} [{A.GREEN}{'█' * bar_len}{A.RESET}] {A.GREEN}[ FOUND ]{A.RESET}\n")
-        sys.stdout.flush(); return True
-    except ImportError:
-        sys.stdout.write(f"\r{prefix} [{A.RED}{'█' * bar_len}{A.RESET}] {A.RED}[ MISSING ]{A.RESET}\n")
-        sys.stdout.flush()
-        print(f"{A.YELLOW}[PIP ]{A.RESET} Installing {A.CYAN}{package}{A.RESET}...")
-        try:
-            subprocess.check_call([sys.executable, '-m', 'pip', 'install', package, '--quiet'],
-                                  stdin=subprocess.DEVNULL,
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            importlib.invalidate_caches()
-            print(f"{A.GREEN}[ OK ]{A.RESET} {package} installed successfully\n"); return True
-        except Exception as e:
-            print(f"{A.RED}[FAIL]{A.RESET} {package} failed: {e}\n"); return False
-
-
-def _boot_loader():
-    _enable_windows_ansi()
-    A = _ANSI
-    _boot_sequence()
-    print(f"{A.CYAN}{A.BOLD}╔══════════════════════════════════════════════╗{A.RESET}")
-    print(f"{A.CYAN}{A.BOLD}║    KAIL ADMIN — BOOT LOADER v13092026.1642   ║{A.RESET}")
-    print(f"{A.CYAN}{A.BOLD}╚══════════════════════════════════════════════╝{A.RESET}\n")
-    print(f"{A.CYAN}[DEPS]{A.RESET} Scanning required modules...\n")
-    ok1 = _scan_bar('colorama')
-    ok2 = _scan_bar('psutil')
-    if not (ok1 and ok2):
-        print(f"{A.RED}[ERROR]{A.RESET} Критические зависимости не установлены.")
-        try: input("Enter...")
-        except Exception: pass
-        sys.exit(1)
-    print(f"{A.GREEN}[ OK ]{A.RESET} All dependencies satisfied.")
-    print(f"{A.YELLOW}[INFO]{A.RESET} Starting Kail Admin core...\n")
-    total = 24
-    for i in range(total):
-        pct = int((i + 1) / total * 100)
-        bar = '█' * (i + 1) + '░' * (total - i - 1)
-        sys.stdout.write(f"\r{A.CYAN}[LOAD]{A.RESET} [{A.GREEN}{bar}{A.RESET}] {pct:3d}%")
-        sys.stdout.flush(); time.sleep(0.03)
-    print(); time.sleep(0.1)
-    print(f"{A.GREEN}[ OK ]{A.RESET} Kernel loaded.")
-    print(f"{A.MAGENTA}[INFO]{A.RESET} Welcome to the matrix, operator.")
-    time.sleep(0.5)
-    _clear()
-
-
-_boot_loader()
-
-
-#  ОСНОВНОЙ КОД
-
-
+import queue
+import shutil
 import signal
 import atexit
-import glob
-import threading
-import re
-import json
+import random
 import getpass
+import hashlib
+import platform
+import threading
+import importlib
+import subprocess
+import traceback
 from datetime import datetime
 from collections import deque
 
-from colorama import Fore, init
-import psutil
-import shutil
+IS_WIN = platform.system() == 'Windows'
+SCRIPT_PATH = os.path.abspath(__file__)
+BASE_DIR = os.path.dirname(SCRIPT_PATH)
 
-init(autoreset=True)
+# Всё (state, логи, настройки, дочерние терминалы) живёт рядом со скриптом —
+# так главный и дочерние терминалы всегда видят одни и те же файлы.
+try:
+    os.chdir(BASE_DIR)
+except OSError:
+    pass
 
-# ---------- Настройки ----------
+# Локальные папки для библиотек самого менеджера (работает даже на Linux с PEP 668 и без root)
+LIBS_DIRS = [os.path.join(BASE_DIR, '.kail_libs'),
+             os.path.join(os.path.expanduser('~'), '.kail_libs')]
+for _d in LIBS_DIRS:
+    if os.path.isdir(_d) and _d not in sys.path:
+        sys.path.append(_d)
+
+try:
+    import psutil
+except Exception:
+    psutil = None
+
+try:
+    import readline  # noqa: F401  (история стрелками на Linux/macOS)
+    HAS_READLINE = True
+except Exception:
+    HAS_READLINE = False
+
+# Консоль не должна падать на юникоде (cp1251/cp866, перенаправление вывода, LANG=C)
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
+
+# ======================================================================
+#  Цвета (собственные ANSI — colorama больше не обязательна)
+# ======================================================================
+class Fore:
+    BLACK = '\033[30m'
+    RED = '\033[31m'
+    GREEN = '\033[32m'
+    YELLOW = '\033[33m'
+    BLUE = '\033[34m'
+    MAGENTA = '\033[35m'
+    CYAN = '\033[36m'
+    WHITE = '\033[37m'
+    LIGHTBLACK_EX = '\033[90m'
+    LIGHTRED_EX = '\033[91m'
+    LIGHTGREEN_EX = '\033[92m'
+    LIGHTYELLOW_EX = '\033[93m'
+    LIGHTBLUE_EX = '\033[94m'
+    LIGHTMAGENTA_EX = '\033[95m'
+    LIGHTCYAN_EX = '\033[96m'
+    LIGHTWHITE_EX = '\033[97m'
+    BOLD = '\033[1m'
+    DIM = '\033[2m'
+    RESET = '\033[0m'
+
+
+_builtin_print = print
+
+
+def print(*args, **kw):  # noqa: A001  (autoreset как у colorama + защита от падений консоли)
+    sep = kw.pop('sep', ' ')
+    end = kw.pop('end', '\n')
+    file = kw.pop('file', None)
+    flush = kw.pop('flush', False)
+    text = sep.join(str(a) for a in args)
+    if '\033[' in text:
+        text += Fore.RESET
+    try:
+        _builtin_print(text, end=end, file=file, flush=flush)
+    except UnicodeEncodeError:
+        try:
+            enc = (getattr(file or sys.stdout, 'encoding', None) or 'ascii')
+            _builtin_print(text.encode(enc, 'replace').decode(enc, 'replace'),
+                           end=end, file=file, flush=flush)
+        except Exception:
+            pass
+    except (OSError, ValueError):
+        pass  # консоль закрыта / сломанный pipe
+
+
+VT_OK = True
+
+
+def _enable_windows_ansi():
+    """Включает ANSI-цвета в консоли Windows (нативно, а если не вышло — через colorama)."""
+    global VT_OK
+    if not IS_WIN:
+        return
+    ok = False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k = ctypes.windll.kernel32
+        k.GetStdHandle.restype = wintypes.HANDLE
+        k.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        k.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        for std in (-11, -12):
+            h = k.GetStdHandle(std)
+            mode = wintypes.DWORD()
+            if h and k.GetConsoleMode(h, ctypes.byref(mode)):
+                if k.SetConsoleMode(h, mode.value | 0x0001 | 0x0004):
+                    ok = True
+    except Exception:
+        ok = False
+    if not ok:
+        try:
+            import colorama
+            colorama.init()
+            ok = True
+        except Exception:
+            pass
+    VT_OK = ok
+
+
+def clear_screen():
+    try:
+        if IS_WIN and not VT_OK:
+            os.system('cls')
+        elif sys.stdout.isatty():
+            sys.stdout.write('\033[2J\033[3J\033[H')
+            sys.stdout.flush()
+    except Exception:
+        pass
+
+
+def _set_title(title):
+    try:
+        if IS_WIN:
+            import ctypes
+            ctypes.windll.kernel32.SetConsoleTitleW(str(title))
+        elif sys.stdout.isatty():
+            sys.stdout.write(f"\033]0;{title}\007")
+            sys.stdout.flush()
+    except Exception:
+        pass
+
+
+# ======================================================================
+#  Настройки
+# ======================================================================
 SETTINGS_FILE = "kail_settings.json"
+STATE_FILE = "kail_state.json"
+ERROR_LOG_FILE = "kail_errors.log"
+CHILD_DIR = "kail_children"
+
 DEFAULT_SETTINGS = {
     "monitor_interval": 30,
     "auto_restart": True,
+    "max_restarts": 5,
     "log_dir": "logs",
     "sudo_confirm": True,
+    "use_venv": True,
+    "venv_fallback": True,
     "auto_install_deps": True,
+    "stop_grace": 3,
     "child_check_interval": 3,
     "auto_open_logs": False,
     "state_sync_interval": 2,
+    "boot_animation": True,
 }
 
 SETTINGS_DESCRIPTIONS = {
     "monitor_interval":      "Интервал проверки ботов (секунд).",
     "auto_restart":          "Авто-перезапуск упавших ботов (true/false).",
+    "max_restarts":          "Макс. авто-перезапусков бота за 10 минут (защита от бесконечного цикла).",
     "log_dir":               "Папка для хранения логов ботов.",
     "sudo_confirm":          "Подтверждение перед sudo-командой (true/false).",
+    "use_venv":              "Запускать ботов в venv (рекомендуется). false — в глобальном Python.",
+    "venv_fallback":         "Если venv создать не вышло — запустить в глобальном Python (true/false).",
     "auto_install_deps":     "Авто-установка недостающих библиотек (true/false).",
+    "stop_grace":            "Сколько секунд ждать мягкой остановки бота перед kill.",
     "child_check_interval":  "Проверка родителя в дочернем терминале (секунд).",
     "auto_open_logs":        "Авто-открытие логов при запуске бота (true/false).",
-    "state_sync_interval":   "Как часто child синхронизирует состояние (секунд).",
+    "state_sync_interval":   "Как часто главный терминал пишет состояние для child (секунд).",
+    "boot_animation":        "Анимация загрузки при старте (true/false).",
 }
+
+SETTINGS_MIN = {
+    "monitor_interval": 1, "max_restarts": 1, "stop_grace": 0,
+    "child_check_interval": 1, "state_sync_interval": 1,
+}
+
 SETTINGS = dict(DEFAULT_SETTINGS)
-
-STATE_FILE = "kail_state.json"
-ERROR_LOG_FILE = "kail_errors.log"
-
-# ---------- Маппинг import -> pip ----------
-PIP_NAME_MAP = {
-    'PIL': 'Pillow', 'cv2': 'opencv-python', 'bs4': 'beautifulsoup4',
-    'sklearn': 'scikit-learn', 'yaml': 'PyYAML', 'dotenv': 'python-dotenv',
-    'telegram': 'python-telegram-bot', 'telebot': 'pyTelegramBotAPI',
-    'discord': 'discord.py', 'Crypto': 'pycryptodome', 'serial': 'pyserial',
-    'dateutil': 'python-dateutil', 'pkg_resources': 'setuptools',
-    'OpenSSL': 'pyOpenSSL', 'win32com': 'pywin32', 'win32api': 'pywin32',
-    'MySQLdb': 'mysqlclient', 'psycopg2': 'psycopg2-binary',
-    'speech_recognition': 'SpeechRecognition',
-    'googleapiclient': 'google-api-python-client',
-    'pytesseract': 'pytesseract', 'fitz': 'PyMuPDF',
-    'docx': 'python-docx', 'pptx': 'python-pptx', 'magic': 'python-magic',
-    'jwt': 'PyJWT', 'multipart': 'python-multipart', 'aiosqlite': 'aiosqlite',
-    'nacl': 'PyNaCl', 'flask_sqlalchemy': 'Flask-SQLAlchemy',
-    'flask_login': 'Flask-Login', 'flask_wtf': 'Flask-WTF',
-    'flask_cors': 'Flask-Cors', 'rest_framework': 'djangorestframework',
-    'crispy_forms': 'django-crispy-forms', 'allauth': 'django-allauth',
-    'telethon': 'Telethon', 'aiogram': 'aiogram', 'pyrogram': 'Pyrogram',
-    'tgcrypto': 'TgCrypto', 'aiohttp': 'aiohttp', 'requests': 'requests',
-    'httpx': 'httpx', 'websockets': 'websockets', 'uvicorn': 'uvicorn',
-    'fastapi': 'fastapi', 'sqlalchemy': 'SQLAlchemy', 'redis': 'redis',
-    'pymongo': 'pymongo', 'motor': 'motor', 'numpy': 'numpy',
-    'pandas': 'pandas', 'matplotlib': 'matplotlib', 'scipy': 'scipy',
-    'openpyxl': 'openpyxl', 'xlsxwriter': 'XlsxWriter',
-    'moviepy': 'moviepy', 'imageio': 'imageio',
-    'aioschedule': 'aioschedule', 'apscheduler': 'APScheduler',
-    'schedule': 'schedule', 'colorama': 'colorama', 'psutil': 'psutil',
-    'pyfiglet': 'pyfiglet', 'tqdm': 'tqdm', 'rich': 'rich',
-    'prompt_toolkit': 'prompt_toolkit', 'loguru': 'loguru',
-    'colorlog': 'colorlog', 'lxml': 'lxml', 'html5lib': 'html5lib',
-    'selenium': 'selenium', 'playwright': 'playwright',
-    'undetected_chromedriver': 'undetected-chromedriver',
-    'pyppeteer': 'pyppeteer', 'curl_cffi': 'curl_cffi',
-    'cloudscraper': 'cloudscraper', 'fake_useragent': 'fake-useragent',
-    'user_agent': 'user_agent', 'pyrogram': 'pyrogram',
-}
-
-STDLIB_SAFE = set()
-if hasattr(sys, 'stdlib_module_names'):
-    STDLIB_SAFE = set(sys.stdlib_module_names)
+TRUE_WORDS = ('1', 'true', 'yes', 'y', 'on', 'вкл', 'да', 'д')
 
 
-def log_error(msg):
-    ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    line = f"[{ts}] {msg}\n"
+def _coerce(key, val):
+    default = DEFAULT_SETTINGS[key]
     try:
-        with open(ERROR_LOG_FILE, 'a', encoding='utf-8') as f:
-            f.write(line)
-    except Exception:
-        pass
-    print(f"{Fore.RED}⚠ {msg}")
+        if isinstance(default, bool):
+            if isinstance(val, bool):
+                return val
+            return str(val).strip().lower() in TRUE_WORDS
+        if isinstance(default, int):
+            return max(SETTINGS_MIN.get(key, 0), int(val))
+        val = str(val).strip()
+        return val or default
+    except (ValueError, TypeError):
+        return default
+
+
+_err_lock = threading.Lock()
+
+
+def log_error(msg, show=True):
+    ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    with _err_lock:
+        try:
+            with open(ERROR_LOG_FILE, 'a', encoding='utf-8') as f:
+                f.write(f"[{ts}] {msg}\n")
+        except Exception:
+            pass
+    if show:
+        print(f"{Fore.RED}⚠ {str(msg).splitlines()[0] if msg else ''}")
 
 
 def save_settings():
@@ -232,240 +261,1332 @@ def save_settings():
 
 
 def load_settings():
-    global SETTINGS
-    if os.path.exists(SETTINGS_FILE):
+    if not os.path.exists(SETTINGS_FILE):
+        return
+    try:
+        with open(SETTINGS_FILE, 'r', encoding='utf-8-sig') as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("ожидался JSON-объект")
+        for k in DEFAULT_SETTINGS:
+            if k in data:
+                SETTINGS[k] = _coerce(k, data[k])
+    except Exception as e:
+        log_error(f"Не удалось загрузить настройки ({e}); использую значения по умолчанию.")
         try:
-            with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                for k in DEFAULT_SETTINGS:
-                    if k in data:
-                        SETTINGS[k] = data[k]
-        except Exception as e:
-            log_error(f"Не удалось загрузить настройки: {e}")
+            os.replace(SETTINGS_FILE, SETTINGS_FILE + '.bak')
+        except Exception:
+            pass
 
 
-def save_state():
+def _atomic_write_json(path, data):
+    """Атомарная запись JSON. На Windows os.replace падает, если файл кто-то читает — ретраим."""
+    tmp = f"{path}.{os.getpid()}.tmp"
     try:
-        state = {
-            "file_list": file_list,
-            "processes": {str(num): proc.pid for num, proc in processes.items()},
-            "process_status": {str(num): (proc.poll() is None) for num, proc in processes.items()},
-            "child_processes": {k: v.pid for k, v in child_processes.items()},
-            "log_windows": {str(k): v.pid for k, v in log_windows.items()},
-            "timestamp": time.time(),
-        }
-        tmp = STATE_FILE + ".tmp"
         with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(state, f, ensure_ascii=False)
-        os.replace(tmp, STATE_FILE)
-    except Exception as e:
-        log_error(f"Не удалось сохранить state: {e}")
-
-
-def load_state():
-    if not os.path.exists(STATE_FILE):
-        return None
+            json.dump(data, f, ensure_ascii=False)
+    except Exception:
+        return False
+    for _ in range(10):
+        try:
+            os.replace(tmp, path)
+            return True
+        except PermissionError:
+            time.sleep(0.05)
+        except OSError:
+            break
     try:
-        with open(STATE_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception as e:
-        log_error(f"Не удалось прочитать state: {e}")
-        return None
-
-
-load_settings()
-
-# ---------- Глобальные ----------
-processes = {}
-file_list = []
-running = True
-log_windows = {}
-log_files = {}
-child_processes = {}
-command_history = deque(maxlen=50)
-SYSTEM_CMDS = ['reboot', 'shutdown', 'poweroff', 'halt', 'systemctl',
-               'service', 'apt', 'yum', 'dnf', 'pacman', 'chmod', 'chown']
-
-os.makedirs(SETTINGS["log_dir"], exist_ok=True)
-
-VERSION = "v13092026.1647"
-PRODUCT_NAME = "Kail Admin"
-
-
-# ---------- Утилиты ----------
-def clear_screen():
-    os.system('cls' if platform.system() == 'Windows' else 'clear')
-
-
-def _flush_stdin():
-    """Сбрасывает буфер stdin, чтобы старые нажатия не попадали в input()."""
-    try:
-        if platform.system() != 'Windows':
-            import termios
-            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+        os.remove(tmp)
     except Exception:
         pass
+    return False
 
 
-def get_python_command(filepath):
-    dirname = os.path.dirname(filepath) or '.'
-    if platform.system() == 'Windows':
-        venv_python = os.path.join(dirname, 'venv', 'Scripts', 'python.exe')
-        if os.path.exists(venv_python):
-            return venv_python
-        if os.path.exists(os.path.join('venv', 'Scripts', 'python.exe')):
-            return os.path.abspath(os.path.join('venv', 'Scripts', 'python.exe'))
-        if shutil.which('py'):
-            return 'py'
-        return 'python'
-    else:
-        venv_python = os.path.join(dirname, 'venv', 'bin', 'python3')
-        if os.path.exists(venv_python):
-            return venv_python
-        if os.path.exists('venv/bin/python3'):
-            return os.path.abspath('venv/bin/python3')
-        return 'python3'
+def _read_json(path, retries=3):
+    for i in range(retries):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return None
+        except (PermissionError, ValueError, OSError):
+            time.sleep(0.05)
+    return None
 
 
-def scan_files():
-    global file_list
-    files = [f for f in glob.glob('*.py') if os.path.isfile(f)]
-    script_name = os.path.basename(__file__)
-    if script_name in files:
-        files.remove(script_name)
-    files.sort()
-    file_list = files
-    return files
+# ======================================================================
+#  Глобальное состояние
+# ======================================================================
+VERSION = "v21112026.2250"
+PRODUCT_NAME = "Kail Admin"
+
+BOTS = {}                      # имя файла -> Bot
+BOTS_LOCK = threading.RLock()  # сериализует запуск/остановку (пользователь + монитор)
+STATE_LOCK = threading.Lock()
+file_list = []
+running = True
+child_terms = {}               # action -> ChildTerm
+command_history = deque(maxlen=50)
+
+SYSTEM_CMDS = ['reboot', 'shutdown', 'poweroff', 'halt', 'systemctl',
+               'service', 'apt', 'yum', 'dnf', 'pacman', 'chmod', 'chown']
+LINUX_ONLY_CMDS = {'apt', 'apt-get', 'yum', 'dnf', 'pacman', 'zypper', 'dpkg', 'snap',
+                   'chmod', 'chown', 'service'}
+POWER_CMDS = ('reboot', 'shutdown', 'poweroff', 'halt')
+
+# ---------- Маппинг import -> pip ----------
+PIP_NAME_MAP = {
+    'PIL': 'Pillow', 'cv2': 'opencv-python', 'bs4': 'beautifulsoup4',
+    'sklearn': 'scikit-learn', 'yaml': 'PyYAML', 'dotenv': 'python-dotenv',
+    'telegram': 'python-telegram-bot', 'telebot': 'pyTelegramBotAPI',
+    'discord': 'discord.py', 'Crypto': 'pycryptodome', 'serial': 'pyserial',
+    'dateutil': 'python-dateutil', 'pkg_resources': 'setuptools',
+    'OpenSSL': 'pyOpenSSL', 'win32com': 'pywin32', 'win32api': 'pywin32',
+    'MySQLdb': 'mysqlclient', 'psycopg2': 'psycopg2-binary',
+    'speech_recognition': 'SpeechRecognition',
+    'googleapiclient': 'google-api-python-client',
+    'fitz': 'PyMuPDF', 'docx': 'python-docx', 'pptx': 'python-pptx',
+    'magic': 'python-magic', 'jwt': 'PyJWT', 'multipart': 'python-multipart',
+    'nacl': 'PyNaCl', 'flask_sqlalchemy': 'Flask-SQLAlchemy',
+    'flask_login': 'Flask-Login', 'flask_wtf': 'Flask-WTF',
+    'flask_cors': 'Flask-Cors', 'rest_framework': 'djangorestframework',
+    'crispy_forms': 'django-crispy-forms', 'allauth': 'django-allauth',
+    'telethon': 'Telethon', 'pyrogram': 'Pyrogram', 'tgcrypto': 'TgCrypto',
+    'sqlalchemy': 'SQLAlchemy', 'xlsxwriter': 'XlsxWriter',
+    'apscheduler': 'APScheduler', 'undetected_chromedriver': 'undetected-chromedriver',
+    'fake_useragent': 'fake-useragent', 'attr': 'attrs', 'markdown': 'Markdown',
+    'zmq': 'pyzmq', 'socks': 'PySocks', 'bson': 'pymongo', 'usb': 'pyusb',
+}
+
+# Модули stdlib, которых может не быть на текущей ОС — их НИКОГДА нельзя ставить из PyPI
+PLATFORM_STDLIB = {
+    'msvcrt', 'winreg', '_winapi', 'winsound', 'nt', 'fcntl', 'termios', 'pwd', 'grp',
+    'resource', 'posix', 'readline', 'curses', 'tkinter', 'syslog', 'crypt', 'spwd',
+    'nis', 'ossaudiodev', 'asyncio', 'distutils', 'imp', 'asynchat', 'asyncore', 'smtpd',
+}
+WINDOWS_ONLY_PKGS = {'win32api', 'win32com', 'win32con', 'win32gui', 'win32file', 'win32process',
+                     'win32service', 'win32serviceutil', 'pywintypes', 'pythoncom', 'wmi', 'comtypes'}
+
+STDLIB_SAFE = set(getattr(sys, 'stdlib_module_names', ())) | PLATFORM_STDLIB
 
 
-def get_imports(filepath):
-    imports = set()
+# ======================================================================
+#  Процессы: проверка, дерево, завершение
+# ======================================================================
+def _win_pid_alive(pid):
     try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            content = f.read()
-        for m in re.finditer(r'^\s*import\s+([a-zA-Z_][\w\.]*)', content, re.MULTILINE):
-            imports.add(m.group(1).split('.')[0])
-        for m in re.finditer(r'^\s*from\s+([a-zA-Z_][\w\.]*)\s+import', content, re.MULTILINE):
-            imports.add(m.group(1).split('.')[0])
-        imports = {i for i in imports if i not in STDLIB_SAFE and not i.startswith('_')}
-    except Exception as e:
-        log_error(f"Ошибка парсинга импортов {filepath}: {e}")
-    return imports
-
-
-def check_module_in_env(python_cmd, module):
-    try:
-        if python_cmd == 'py':
-            cmd = ['py', '-3', '-c', f'import {module}']
-        else:
-            cmd = [python_cmd, '-c', f'import {module}']
-        result = subprocess.run(cmd, capture_output=True, text=True,
-                                timeout=15, stdin=subprocess.DEVNULL)
-        return result.returncode == 0
+        import ctypes
+        k = ctypes.WinDLL('kernel32', use_last_error=True)
+        k.OpenProcess.restype = ctypes.c_void_p
+        k.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+        k.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+        k.CloseHandle.argtypes = [ctypes.c_void_p]
+        h = k.OpenProcess(0x1000, 0, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return ctypes.get_last_error() == 5  # access denied => процесс существует
+        code = ctypes.c_ulong()
+        ok = k.GetExitCodeProcess(h, ctypes.byref(code))
+        k.CloseHandle(h)
+        return bool(ok) and code.value == 259    # STILL_ACTIVE
     except Exception:
         return False
 
 
-def pip_install(python_cmd, package, cwd=None):
+def pid_alive(pid, ctime=None):
+    if not pid:
+        return False
     try:
-        if python_cmd == 'py':
-            cmd = ['py', '-3', '-m', 'pip', 'install', package]
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if psutil:
+        try:
+            p = psutil.Process(pid)
+            if not p.is_running() or p.status() == psutil.STATUS_ZOMBIE:
+                return False
+            if ctime:
+                try:
+                    if abs(p.create_time() - float(ctime)) > 2:
+                        return False  # PID переиспользован другим процессом
+                except Exception:
+                    pass
+            return True
+        except psutil.NoSuchProcess:
+            return False
+        except psutil.AccessDenied:
+            return True
+        except Exception:
+            return False
+    if IS_WIN:
+        return _win_pid_alive(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _ps_alive(p):
+    try:
+        return p.is_running() and p.status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+    except Exception:
+        return True
+
+
+def _taskkill_tree(pid):
+    try:
+        subprocess.run(['taskkill', '/F', '/T', '/PID', str(pid)],
+                       capture_output=True, timeout=15, stdin=subprocess.DEVNULL,
+                       creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except Exception:
+        pass
+
+
+def terminate_tree(pid, grace=3.0, group=False, proc=None):
+    """
+    Завершает процесс и ВСЕХ его потомков.
+    Linux: SIGTERM -> ждём grace -> SIGKILL (по группе и по дереву psutil).
+    Windows: taskkill /F /T + добивание через psutil (venv-python на Windows — «трамплин», дерево обязательно).
+    Никогда не убивает собственную группу процессов. Ничего не бросает наружу.
+    """
+    if not pid:
+        return True
+    family = []
+    if psutil:
+        try:
+            root = psutil.Process(pid)
+            family = root.children(recursive=True) + [root]
+        except Exception:
+            family = []
+
+    def alive():
+        if proc is not None:
+            if proc.poll() is None:
+                return True
+        elif pid_alive(pid):
+            return True
+        if psutil:
+            return any(_ps_alive(p) for p in family if p.pid != pid)
+        return False
+
+    try:
+        if IS_WIN:
+            if alive():
+                _taskkill_tree(pid)
+                for p in family:
+                    try:
+                        p.kill()
+                    except Exception:
+                        pass
+                if psutil and family:
+                    try:
+                        psutil.wait_procs(family, timeout=3)
+                    except Exception:
+                        pass
         else:
-            cmd = [python_cmd, '-m', 'pip', 'install', package]
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd,
-                                timeout=300, stdin=subprocess.DEVNULL)
-        ok = result.returncode == 0
-        out = (result.stdout or '') + (result.stderr or '')
-        return ok, out
+            pgid = None
+            if group and (proc is None or proc.poll() is None):
+                try:
+                    g = os.getpgid(pid)
+                    if g != os.getpgrp():
+                        pgid = g
+                except Exception:
+                    pgid = None
+
+            def send(sig):
+                if pgid:
+                    try:
+                        os.killpg(pgid, sig)
+                    except Exception:
+                        pass
+                for p in family:
+                    try:
+                        p.send_signal(sig)
+                    except Exception:
+                        pass
+                if not family:
+                    try:
+                        os.kill(pid, sig)
+                    except Exception:
+                        pass
+
+            if grace and grace > 0:
+                send(signal.SIGTERM)
+                end = time.time() + grace
+                while time.time() < end and alive():
+                    time.sleep(0.1)
+            if alive() or (pgid and not psutil):
+                send(signal.SIGKILL)
+    except Exception as e:
+        log_error(f"terminate_tree({pid}): {e}", show=False)
+
+    if proc is not None:
+        try:
+            proc.wait(timeout=3)
+        except Exception:
+            pass
+    end = time.time() + 2
+    while time.time() < end and alive():
+        time.sleep(0.05)
+    return not alive()
+
+
+def _group_kwargs():
+    """Отдельная группа/сессия: Ctrl+C менеджера не убивает ботов, а мы можем убить всё дерево."""
+    if IS_WIN:
+        return {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {'start_new_session': True}   # вместо preexec_fn — тот может дедлочить в многопоточной программе
+
+
+# ======================================================================
+#  Запуск команд с живым статусом (pip и т.п.) — не «замирает», Ctrl+C прерывает
+# ======================================================================
+def _status(text):
+    try:
+        if not sys.stdout.isatty():
+            return
+        w = max(20, shutil.get_terminal_size((100, 25)).columns - 6)
+        t = text.strip().replace('\t', ' ')[:w]
+        erase = '\033[K' if (not IS_WIN or VT_OK) else ' ' * 4
+        sys.stdout.write(f"\r{Fore.LIGHTBLACK_EX}  {t}{Fore.RESET}{erase}")
+        sys.stdout.flush()
+    except Exception:
+        pass
+
+
+def _status_clear():
+    try:
+        if sys.stdout.isatty():
+            erase = '\033[K' if (not IS_WIN or VT_OK) else ' ' * 80
+            sys.stdout.write('\r' + erase + '\r')
+            sys.stdout.flush()
+    except Exception:
+        pass
+
+
+def _clean_env():
+    env = os.environ.copy()
+    env.pop('PYTHONHOME', None)
+    env['PIP_DISABLE_PIP_VERSION_CHECK'] = '1'
+    env['PIP_NO_INPUT'] = '1'
+    env['PYTHONIOENCODING'] = 'utf-8'
+    return env
+
+
+def run_stream(cmd, cwd=None, timeout=900, show=True):
+    """Запускает команду, показывает последнюю строку вывода. Возвращает (rc, хвост_вывода)."""
+    try:
+        p = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             env=_clean_env(), **_group_kwargs())
+    except Exception as e:
+        return -1, str(e)
+
+    q = queue.Queue()
+
+    def reader():
+        try:
+            for raw in iter(p.stdout.readline, b''):
+                q.put(raw.decode('utf-8', 'replace'))
+        except Exception:
+            pass
+        q.put(None)
+
+    threading.Thread(target=reader, daemon=True).start()
+    tail = deque(maxlen=60)
+    start = last_data = time.time()
+    timed_out = False
+    try:
+        while True:
+            try:
+                item = q.get(timeout=0.5)
+            except queue.Empty:
+                item = ''
+                if p.poll() is not None and time.time() - last_data > 2:
+                    break
+            if item is None:
+                break
+            if item:
+                last_data = time.time()
+                line = item.rstrip()
+                if line:
+                    tail.append(line)
+                    if show:
+                        _status(line)
+            if time.time() - start > timeout:
+                timed_out = True
+                terminate_tree(p.pid, grace=0, group=True, proc=p)
+                break
+    except KeyboardInterrupt:
+        terminate_tree(p.pid, grace=0, group=True, proc=p)
+        if show:
+            _status_clear()
+        raise
+    if show:
+        _status_clear()
+    try:
+        rc = p.wait(timeout=10)
+    except Exception:
+        terminate_tree(p.pid, grace=0, group=True, proc=p)
+        rc = -9
+    if timed_out:
+        tail.append(f"[таймаут {timeout} c]")
+        rc = rc if rc not in (0, None) else -9
+    try:
+        p.stdout.close()
+    except Exception:
+        pass
+    return rc, '\n'.join(tail)
+
+
+def _run_quiet(cmd, timeout=60, cwd=None):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd,
+                           stdin=subprocess.DEVNULL, env=_clean_env(),
+                           encoding='utf-8', errors='replace')
+        return r.returncode == 0, (r.stdout or '') + (r.stderr or '')
     except Exception as e:
         return False, str(e)
 
 
-def install_bot_dependencies(dir_path, python_cmd, filepath):
-    """Ставит зависимости бота через его же Python."""
+# ======================================================================
+#  pip / зависимости
+# ======================================================================
+def pip_install(python_exe, args, cwd=None, is_venv=True, timeout=900, show=True):
+    """pip install с обходными путями: ensurepip, PEP 668 (--break-system-packages), --user."""
+    base = [python_exe, '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input']
+    rc, out = run_stream(base + list(args), cwd=cwd, timeout=timeout, show=show)
+    low = out.lower()
+    if rc != 0 and 'no module named pip' in low:
+        _run_quiet([python_exe, '-m', 'ensurepip', '--upgrade'], timeout=180)
+        rc, out = run_stream(base + list(args), cwd=cwd, timeout=timeout, show=show)
+        low = out.lower()
+    if rc != 0 and not is_venv:
+        if 'externally-managed-environment' in low or 'externally managed' in low:
+            rc, out = run_stream(base + ['--break-system-packages'] + list(args),
+                                 cwd=cwd, timeout=timeout, show=show)
+        elif 'permission denied' in low or 'errno 13' in low or 'access is denied' in low:
+            rc, out = run_stream(base + ['--user'] + list(args), cwd=cwd, timeout=timeout, show=show)
+    return rc == 0, out
+
+
+def _pip_target_install(pkg):
+    """Ставит библиотеку самого менеджера в локальную папку (обходит PEP 668 и нехватку прав)."""
+    for target in LIBS_DIRS:
+        try:
+            os.makedirs(target, exist_ok=True)
+        except OSError:
+            continue
+        rc, _ = run_stream([sys.executable, '-m', 'pip', 'install', '--disable-pip-version-check',
+                            '--no-input', '--target', target, pkg], timeout=300)
+        if rc == 0:
+            if target not in sys.path:
+                sys.path.append(target)
+            importlib.invalidate_caches()
+            return True
+    ok, _ = pip_install(sys.executable, [pkg], is_venv=False, timeout=300)
+    importlib.invalidate_caches()
+    return ok
+
+
+def _try_import(name):
+    try:
+        importlib.invalidate_caches()
+        return importlib.import_module(name)
+    except Exception:
+        return None
+
+
+def _is_local_module(name, dirs):
+    for d in dirs:
+        if os.path.isfile(os.path.join(d, name + '.py')) or os.path.isdir(os.path.join(d, name)):
+            return True
+    return False
+
+
+def get_imports(filepath):
+    """Сторонние модули, которые импортирует файл (через ast; локальные модули и stdlib отброшены)."""
+    mods = set()
+    try:
+        with open(filepath, 'rb') as f:
+            src = f.read().decode('utf-8-sig', errors='replace')
+    except Exception as e:
+        log_error(f"Ошибка чтения {filepath}: {e}", show=False)
+        return mods
+    try:
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    mods.add(a.name.split('.')[0])
+            elif isinstance(node, ast.ImportFrom):
+                if node.level == 0 and node.module:
+                    mods.add(node.module.split('.')[0])
+    except Exception:
+        for m in re.finditer(r'^\s*import\s+([^\n#]+)', src, re.MULTILINE):
+            for part in m.group(1).split(','):
+                part = part.strip().split(' ')[0]
+                if part:
+                    mods.add(part.split('.')[0])
+        for m in re.finditer(r'^\s*from\s+([a-zA-Z_][\w\.]*)\s+import', src, re.MULTILINE):
+            mods.add(m.group(1).split('.')[0])
+
+    dirs = {os.path.dirname(os.path.abspath(filepath)), os.getcwd()}
+    result = set()
+    for m in mods:
+        if not m or not m.isidentifier() or m.startswith('_') or m == '__future__':
+            continue
+        if m in STDLIB_SAFE or _is_local_module(m, dirs):
+            continue
+        if m in WINDOWS_ONLY_PKGS and not IS_WIN:
+            continue
+        result.add(m)
+    return result
+
+
+def find_missing(python_exe, mods, cwd):
+    """Какие модули не находятся в указанном Python (один запуск вместо N). None — проверка не удалась."""
+    if not mods:
+        return []
+    code = ("import sys, json, importlib.util as u\n"
+            "r = []\n"
+            "for m in sys.argv[1:]:\n"
+            "    try:\n"
+            "        s = u.find_spec(m)\n"
+            "    except Exception:\n"
+            "        s = None\n"
+            "    if s is None:\n"
+            "        r.append(m)\n"
+            "print(json.dumps(r))\n")
+    ok, out = _run_quiet([python_exe, '-c', code] + sorted(mods), timeout=90, cwd=cwd)
+    if ok:
+        try:
+            return json.loads(out.strip().splitlines()[-1])
+        except Exception:
+            pass
+    return None
+
+
+def _parse_requirements(req_file):
+    specs = []
+    try:
+        with open(req_file, 'r', encoding='utf-8-sig', errors='replace') as f:
+            for line in f:
+                line = re.sub(r'\s+#.*$', '', line).strip()
+                if not line or line.startswith('#') or line.startswith('-'):
+                    continue
+                specs.append(line)
+    except Exception as e:
+        log_error(f"Не прочитал {req_file}: {e}", show=False)
+    return specs
+
+
+def _deps_signature(python_exe, req_file, filepath):
+    h = hashlib.sha1(python_exe.encode('utf-8', 'replace'))
+    try:
+        if os.path.isfile(req_file):
+            with open(req_file, 'rb') as f:
+                h.update(b'req:' + f.read())
+        else:
+            h.update(b'imp:' + ','.join(sorted(get_imports(filepath))).encode())
+    except Exception:
+        return None
+    return h.hexdigest()
+
+
+def install_dependencies(python_exe, dir_path, filepath, is_venv, venv_dir=None, quiet=False):
+    """Ставит зависимости бота в выбранный Python (venv или глобальный). True — всё на месте."""
     if not SETTINGS["auto_install_deps"]:
-        return
+        return True
 
     req_file = os.path.join(dir_path, 'requirements.txt')
+    cache_file = os.path.join(venv_dir, '.kail_deps.json') if (is_venv and venv_dir) else None
+    sig = _deps_signature(python_exe, req_file, filepath) if cache_file else None
+    if cache_file and sig:
+        cached = _read_json(cache_file, retries=1) or {}
+        if sig in (cached.get('sigs') or {}):
+            if not quiet:
+                print(f"{Fore.GREEN}✅ Зависимости актуальны (кэш).")
+            return True
+
+    where = "venv" if is_venv else "глобальный Python"
+    failed = []
 
     if os.path.isfile(req_file):
-        print(f"{Fore.YELLOW}Устанавливаю зависимости из requirements.txt...")
-        try:
-            if python_cmd == 'py':
-                cmd = ['py', '-3', '-m', 'pip', 'install', '-r', req_file]
-            else:
-                cmd = [python_cmd, '-m', 'pip', 'install', '-r', req_file]
-            result = subprocess.run(cmd, capture_output=True, text=True,
-                                    cwd=dir_path, timeout=900,
-                                    stdin=subprocess.DEVNULL)
-            if result.returncode == 0:
-                print(f"{Fore.GREEN}✅ Зависимости из requirements.txt установлены.")
-            else:
-                print(f"{Fore.RED}⚠ pip install -r fail (код {result.returncode})")
-                tail = (result.stderr or '')[-500:]
-                print(f"{Fore.LIGHTBLACK_EX}{tail}")
-                log_error(f"pip install -r fail: {tail}")
-        except Exception as e:
-            log_error(f"Ошибка установки из requirements.txt: {e}")
-        return
-
-    imports = get_imports(filepath)
-    if not imports:
-        return
-
-    print(f"{Fore.YELLOW}Проверяю библиотеки для {os.path.basename(filepath)}...")
-
-    missing = []
-    for module in sorted(imports):
-        if not check_module_in_env(python_cmd, module):
-            missing.append(module)
-
-    if not missing:
-        print(f"{Fore.GREEN}✅ Все библиотеки уже установлены.")
-        return
-
-    print(f"{Fore.YELLOW}Не хватает: {Fore.LIGHTCYAN_EX}{', '.join(missing)}")
-
-    installed = 0
-    failed = []
-    for module in missing:
-        pip_name = PIP_NAME_MAP.get(module, module)
-        print(f"{Fore.YELLOW}→ Устанавливаю {Fore.LIGHTCYAN_EX}{pip_name}{Fore.YELLOW} (для {module})...")
-        ok, out = pip_install(python_cmd, pip_name, cwd=dir_path)
-        if not ok:
-            print(f"{Fore.YELLOW}  ↻ Повторная попытка с --no-cache-dir...")
-            try:
-                if python_cmd == 'py':
-                    cmd = ['py', '-3', '-m', 'pip', 'install', '--no-cache-dir', pip_name]
-                else:
-                    cmd = [python_cmd, '-m', 'pip', 'install', '--no-cache-dir', pip_name]
-                r2 = subprocess.run(cmd, capture_output=True, text=True, cwd=dir_path,
-                                    timeout=300, stdin=subprocess.DEVNULL)
-                ok = r2.returncode == 0
-                out = (r2.stdout or '') + (r2.stderr or '')
-            except Exception as e:
-                ok = False
-                out = str(e)
-
+        print(f"{Fore.YELLOW}Устанавливаю requirements.txt ({where})...")
+        ok, out = pip_install(python_exe, ['-r', req_file], cwd=dir_path, is_venv=is_venv, timeout=1800)
         if ok:
-            print(f"{Fore.GREEN}  ✅ {pip_name} установлен.")
-            installed += 1
+            print(f"{Fore.GREEN}✅ Requirements установлены.")
         else:
-            print(f"{Fore.RED}  ❌ Не удалось установить {pip_name}.")
-            tail = out.strip().split('\n')[-3:]
-            for line in tail:
-                print(f"{Fore.LIGHTBLACK_EX}     {line}")
-            failed.append(pip_name)
-            log_error(f"Не удалось установить {pip_name}: {out[:500]}")
+            print(f"{Fore.YELLOW}⚠ pip -r не прошёл — ставлю по одному пакету, чтобы один сбой не ломал всё...")
+            log_error(f"pip -r fail: {out[-400:]}", show=False)
+            for spec in _parse_requirements(req_file):
+                ok1, out1 = pip_install(python_exe, [spec], cwd=dir_path, is_venv=is_venv,
+                                        timeout=900, show=True)
+                if ok1:
+                    print(f"{Fore.GREEN}  ✅ {spec}")
+                else:
+                    print(f"{Fore.RED}  ❌ {spec}")
+                    failed.append(spec)
+                    log_error(f"pip fail {spec}: {out1[-300:]}", show=False)
+    else:
+        imports = get_imports(filepath)
+        if imports:
+            print(f"{Fore.YELLOW}Проверяю библиотеки для {os.path.basename(filepath)} ({where})...")
+            missing = find_missing(python_exe, imports, dir_path)
+            if missing is None:
+                print(f"{Fore.YELLOW}⚠ Не удалось проверить библиотеки — пропускаю установку.")
+                return False
+            if not missing:
+                print(f"{Fore.GREEN}✅ Все библиотеки уже установлены.")
+            else:
+                print(f"{Fore.YELLOW}Не хватает: {Fore.LIGHTCYAN_EX}{', '.join(sorted(missing))}")
+                pip_names = []
+                for m in sorted(missing):
+                    n = PIP_NAME_MAP.get(m, m)
+                    if n not in pip_names:
+                        pip_names.append(n)
+                print(f"{Fore.YELLOW}→ Устанавливаю: {Fore.LIGHTCYAN_EX}{' '.join(pip_names)}")
+                ok, out = pip_install(python_exe, pip_names, cwd=dir_path, is_venv=is_venv, timeout=1800)
+                if not ok:
+                    print(f"{Fore.YELLOW}  ↻ Пакетная установка не прошла, ставлю по одному...")
+                    for n in pip_names:
+                        ok1, out1 = pip_install(python_exe, ['--no-cache-dir', n], cwd=dir_path,
+                                                is_venv=is_venv, timeout=900)
+                        if ok1:
+                            print(f"{Fore.GREEN}  ✅ {n}")
+                        else:
+                            print(f"{Fore.RED}  ❌ {n}")
+                            for line in out1.strip().splitlines()[-3:]:
+                                print(f"{Fore.LIGHTBLACK_EX}     {line}")
+                            failed.append(n)
+                            log_error(f"pip fail {n}: {out1[-400:]}", show=False)
+                still = find_missing(python_exe, set(missing), dir_path) or []
+                if not still and not failed:
+                    print(f"{Fore.GREEN}✅ Установлено библиотек: {len(pip_names)}")
+                failed = failed or list(still)
 
     if failed:
         print(f"{Fore.RED}Не удалось установить: {', '.join(failed)}")
-    elif installed:
-        print(f"{Fore.GREEN}✅ Установлено библиотек: {installed}")
+        return False
+    if cache_file and sig:
+        sigs = (_read_json(cache_file, retries=1) or {}).get('sigs') or {}
+        sigs[sig] = time.time()
+        if len(sigs) > 200:
+            sigs = dict(sorted(sigs.items(), key=lambda kv: kv[1])[-100:])
+        _atomic_write_json(cache_file, {"sigs": sigs})
+    return True
 
 
-# ---------- Логотип ----------
+# ======================================================================
+#  venv (с обходными путями)
+# ======================================================================
+def _rmtree(path):
+    def onerr(func, p, exc):
+        try:
+            os.chmod(p, 0o700)
+            func(p)
+        except Exception:
+            pass
+    try:
+        shutil.rmtree(path, onerror=onerr)
+    except Exception:
+        pass
+
+
+def _venv_dir_for(dir_path):
+    """venv из другой ОС (общая папка Linux/Windows) не трогаем — создаём рядом venv-win / venv-linux."""
+    base = os.path.join(dir_path, 'venv')
+    has_bin = os.path.isdir(os.path.join(base, 'bin'))
+    has_scripts = os.path.isdir(os.path.join(base, 'Scripts'))
+    if IS_WIN and has_bin and not os.path.exists(os.path.join(base, 'Scripts', 'python.exe')):
+        return base + '-win'
+    if not IS_WIN and has_scripts and not has_bin:
+        return base + '-linux'
+    return base
+
+
+def _venv_python(venv_dir):
+    if IS_WIN:
+        return os.path.join(venv_dir, 'Scripts', 'python.exe')
+    for n in ('python3', 'python'):
+        p = os.path.join(venv_dir, 'bin', n)
+        if os.path.exists(p):
+            return p
+    return os.path.join(venv_dir, 'bin', 'python3')
+
+
+def _python_works(py, timeout=30):
+    ok, _ = _run_quiet([py, '-c', 'import sys; print(sys.version_info[0])'], timeout=timeout)
+    return ok
+
+
+def _pip_works(py):
+    ok, _ = _run_quiet([py, '-m', 'pip', '--version'], timeout=60)
+    return ok
+
+
+def _base_pythons():
+    cands = []
+
+    def add(p):
+        if p and os.path.exists(p) and p not in cands:
+            cands.append(p)
+
+    try:
+        if getattr(sys, 'base_prefix', sys.prefix) != sys.prefix:
+            base = sys.base_prefix
+            add(os.path.join(base, 'python.exe') if IS_WIN else os.path.join(base, 'bin', 'python3'))
+    except Exception:
+        pass
+    add(sys.executable)
+    if IS_WIN:
+        add(shutil.which('python'))
+    else:
+        add(shutil.which('python3'))
+    return [c for c in cands if _python_works(c, 20)]
+
+
+def _global_python():
+    exe = sys.executable
+    if IS_WIN and exe.lower().endswith('pythonw.exe'):
+        alt = exe[:-len('pythonw.exe')] + 'python.exe'
+        if os.path.exists(alt):
+            return alt
+    return exe or shutil.which('python3') or shutil.which('python') or 'python'
+
+
+def _has_pyvenv_cfg(venv_dir):
+    return os.path.isfile(os.path.join(venv_dir, 'pyvenv.cfg'))
+
+
+def ensure_venv(dir_path, quiet=False):
+    """
+    Возвращает (python_venv, venv_dir) или (None, None).
+    Обходные пути: битый venv пересоздаётся; нет ensurepip (Debian/Ubuntu) -> virtualenv.
+    """
+    venv_dir = _venv_dir_for(dir_path)
+    vpy = _venv_python(venv_dir)
+
+    if os.path.exists(vpy) and _python_works(vpy):
+        if not quiet:
+            print(f"{Fore.GREEN}✅ venv уже существует: {venv_dir}")
+        return vpy, venv_dir
+    if os.path.isdir(venv_dir) and _has_pyvenv_cfg(venv_dir):
+        print(f"{Fore.YELLOW}⚠ venv повреждён (обновился Python / перенесли папку?) — пересоздаю...")
+        _rmtree(venv_dir)
+
+    print(f"{Fore.YELLOW}Создаю venv в {venv_dir}...")
+    bases = _base_pythons()
+    if not bases:
+        print(f"{Fore.RED}❌ Не найден рабочий Python для создания venv.")
+        return None, None
+
+    last_out = ''
+    for bp in bases:
+        rc, out = run_stream([bp, '-m', 'venv', venv_dir], timeout=300)
+        vpy = _venv_python(venv_dir)
+        if rc == 0 and os.path.exists(vpy):
+            if not _pip_works(vpy):
+                _run_quiet([vpy, '-m', 'ensurepip', '--upgrade'], timeout=180)
+            if _pip_works(vpy):
+                _run_quiet([vpy, '-m', 'pip', 'install', '--upgrade', 'pip', '--quiet',
+                            '--disable-pip-version-check'], timeout=180)
+                print(f"{Fore.GREEN}✅ venv создан: {venv_dir}")
+                return vpy, venv_dir
+        last_out = out
+        if _has_pyvenv_cfg(venv_dir):
+            _rmtree(venv_dir)
+
+    print(f"{Fore.YELLOW}⚠ Стандартный venv не создался "
+          f"{'(на Debian/Ubuntu: apt install python3-venv)' if not IS_WIN else ''} — пробую virtualenv...")
+    if last_out:
+        for line in last_out.strip().splitlines()[-2:]:
+            print(f"{Fore.LIGHTBLACK_EX}   {line}")
+    for bp in bases:
+        ok, _ = _run_quiet([bp, '-m', 'virtualenv', '--version'], timeout=60)
+        if not ok:
+            ok, _ = pip_install(bp, ['virtualenv'], is_venv=False, timeout=300)
+        if not ok:
+            continue
+        rc, out = run_stream([bp, '-m', 'virtualenv', venv_dir], timeout=300)
+        vpy = _venv_python(venv_dir)
+        if rc == 0 and os.path.exists(vpy) and _python_works(vpy):
+            print(f"{Fore.GREEN}✅ venv создан через virtualenv: {venv_dir}")
+            return vpy, venv_dir
+        if _has_pyvenv_cfg(venv_dir):
+            _rmtree(venv_dir)
+
+    log_error(f"Не удалось создать venv в {venv_dir}: {last_out[-300:]}", show=False)
+    return None, None
+
+
+# ======================================================================
+#  Боты
+# ======================================================================
+class Bot:
+    def __init__(self, name, proc, python, venv, want_venv, log_path, restarts=None):
+        self.name = name
+        self.proc = proc
+        self.pid = proc.pid
+        self.python = python
+        self.venv = venv              # реально запущен в venv
+        self.want_venv = want_venv    # что просили (для перезапусков)
+        self.log_path = log_path
+        self.started = time.time()
+        self.restarts = restarts if restarts is not None else deque(maxlen=50)
+
+    def alive(self):
+        return self.proc.poll() is None
+
+    @property
+    def returncode(self):
+        return self.proc.poll()
+
+
+def log_path_for(name):
+    stem = os.path.splitext(os.path.basename(name))[0]
+    return os.path.join(SETTINGS["log_dir"], stem + '.log')
+
+
+def bot_name(num):
+    idx = num - 1
+    if 0 <= idx < len(file_list):
+        return file_list[idx]
+    return None
+
+
+def _same_path(a, b):
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def scan_files():
+    global file_list
+    found = set()
+    for f in glob.glob('*.py'):
+        if os.path.isfile(f) and not _same_path(f, SCRIPT_PATH):
+            found.add(f)
+    with BOTS_LOCK:
+        for n, b in BOTS.items():      # работающий бот не пропадает из списка, даже если файл удалили
+            if b.alive():
+                found.add(n)
+        file_list = sorted(found)
+    return file_list
+
+
+def _tail_lines(path, n):
+    try:
+        size = os.path.getsize(path)
+        with open(path, 'rb') as f:
+            f.seek(max(0, size - 65536))
+            data = f.read()
+        return data.decode('utf-8', 'replace').splitlines()[-n:], size
+    except Exception:
+        return [], 0
+
+
+def _bot_env():
+    env = os.environ.copy()
+    env.pop('PYTHONHOME', None)
+    env['PYTHONUNBUFFERED'] = '1'
+    env['PYTHONIOENCODING'] = 'utf-8'
+    return env
+
+
+def launch_bot(name, use_venv=None, install_deps=True, append_log=False,
+               restarts=None, quiet=False):
+    """Запускает бота. Возвращает Bot или None. venv — по умолчанию из настроек."""
+    abs_path = os.path.abspath(name)
+    if not os.path.isfile(abs_path):
+        log_error(f"Файл {abs_path} не найден!")
+        return None
+    dir_path = os.path.dirname(abs_path)
+    want_venv = SETTINGS["use_venv"] if use_venv is None else bool(use_venv)
+
+    python_exe, venv_dir, is_venv = None, None, False
+    if want_venv:
+        python_exe, venv_dir = ensure_venv(dir_path, quiet=quiet)
+        if python_exe:
+            is_venv = True
+        elif SETTINGS["venv_fallback"]:
+            print(f"{Fore.YELLOW}⚠ venv недоступен — запускаю в глобальном Python (venv_fallback).")
+            python_exe = _global_python()
+        else:
+            print(f"{Fore.RED}❌ Не удалось подготовить venv (venv_fallback выключен).")
+            return None
+    else:
+        python_exe = _global_python()
+
+    if install_deps:
+        try:
+            install_dependencies(python_exe, dir_path, abs_path, is_venv, venv_dir, quiet=quiet)
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            log_error(f"Ошибка установки зависимостей: {e}", show=False)
+            print(f"{Fore.YELLOW}⚠ Установка зависимостей прервалась ({e}) — пробую запустить как есть.")
+
+    log_path = log_path_for(name)
+    try:
+        os.makedirs(os.path.dirname(log_path) or '.', exist_ok=True)
+    except OSError as e:
+        log_error(f"Не создать папку логов: {e}")
+        return None
+
+    mode = 'a' if append_log else 'w'
+    try:
+        if append_log and os.path.getsize(log_path) > 20 * 1024 * 1024:
+            mode = 'w'
+    except OSError:
+        pass
+
+    try:
+        with open(log_path, mode, encoding='utf-8') as lf:
+            stamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            tag = ' [venv]' if is_venv else ''
+            lf.write(("\n" if mode == 'a' else "") + f"=== Логи {name}{tag} | старт {stamp} ===\n")
+            lf.write(f"Команда: {python_exe} -u {abs_path}\n")
+            lf.write(f"Рабочая папка: {dir_path}\n")
+            lf.write("=" * 50 + "\n\n")
+            lf.flush()
+            proc = subprocess.Popen([python_exe, '-u', abs_path], cwd=dir_path,
+                                    stdin=subprocess.DEVNULL, stdout=lf, stderr=subprocess.STDOUT,
+                                    env=_bot_env(), **_group_kwargs())
+    except Exception as e:
+        log_error(f"Ошибка запуска {name}: {e}")
+        return None
+
+    deadline = time.time() + 1.0
+    while time.time() < deadline and proc.poll() is None:
+        time.sleep(0.1)
+    if proc.poll() is not None:
+        last, _ = _tail_lines(log_path, 25)
+        print(f"{Fore.RED}❌ {name} завершился сразу (код {proc.returncode})! Логи:")
+        for line in last:
+            print(f"{Fore.YELLOW}{line.rstrip()}")
+        return None
+
+    bot = Bot(name, proc, python_exe, is_venv, want_venv, log_path, restarts)
+    with BOTS_LOCK:
+        BOTS[name] = bot
+    return bot
+
+
+def kill_bot_process(bot, force=False):
+    grace = 0 if force else SETTINGS["stop_grace"]
+    return terminate_tree(bot.pid, grace=grace, group=True, proc=bot.proc)
+
+
+def stop_bot(name, force=False):
+    """Убирает бота из списка (чтобы монитор не перезапустил) и завершает всё его дерево."""
+    with BOTS_LOCK:
+        bot = BOTS.pop(name, None)
+    if bot is None:
+        return True
+    return kill_bot_process(bot, force=force)
+
+
+def stop_all_bots():
+    with BOTS_LOCK:
+        items = list(BOTS.values())
+        BOTS.clear()
+    if not items:
+        return 0
+    threads = []
+    try:
+        for b in items:
+            t = threading.Thread(target=kill_bot_process, args=(b,), daemon=True)
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join(timeout=SETTINGS["stop_grace"] + 10)
+    except RuntimeError:       # завершение интерпретатора — потоки уже нельзя, делаем по очереди
+        for b in items:
+            kill_bot_process(b)
+    return len(items)
+
+
+# ---------- State (для дочерних терминалов) ----------
+def save_state():
+    try:
+        with BOTS_LOCK:
+            names = list(file_list)
+            bots = dict(BOTS)
+            children = {}
+            for k, t in list(child_terms.items()):
+                if t.pid:
+                    children[k] = t.pid
+        procs, status, logs = {}, {}, {}
+        for i, n in enumerate(names, 1):
+            b = bots.get(n)
+            if b:
+                procs[str(i)] = b.pid
+                status[str(i)] = b.alive()
+            logs[str(i)] = log_path_for(n)
+        state = {
+            "manager_pid": os.getpid(),
+            "file_list": names,
+            "processes": procs,
+            "process_status": status,
+            "log_files": logs,
+            "child_processes": children,
+            "timestamp": time.time(),
+        }
+        with STATE_LOCK:
+            _atomic_write_json(STATE_FILE, state)
+    except Exception as e:
+        log_error(f"Не удалось сохранить state: {e}", show=False)
+
+
+def load_state():
+    return _read_json(STATE_FILE)
+
+
+# ---------- Уведомления из фоновых потоков ----------
+_prompt_visible = False
+_current_prompt = ''
+
+
+def notify(msg):
+    print(f"\n{msg}")
+    if _prompt_visible and _current_prompt:
+        try:
+            sys.stdout.write(_current_prompt)
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+
+# ---------- Авто-перезапуск ----------
+def _monitor_once():
+    with BOTS_LOCK:
+        dead = [(n, b) for n, b in BOTS.items() if not b.alive()]
+    for name, old in dead:
+        with BOTS_LOCK:
+            if BOTS.get(name) is not old:
+                continue                      # пользователь уже сам что-то сделал
+            now = time.time()
+            recent = [t for t in old.restarts if now - t < 600]
+            if len(recent) >= SETTINGS["max_restarts"]:
+                BOTS.pop(name, None)
+                notify(f"{Fore.RED}⛔ Бот {name} падает слишком часто "
+                       f"({len(recent)} раз за 10 минут) — авто-перезапуск отключён. "
+                       f"Смотрите логи: logs <num>")
+                continue
+            recent.append(now)
+            old.restarts = deque(recent, maxlen=50)
+            notify(f"{Fore.RED}⚠ Бот {name} упал (код {old.returncode}), перезапускаем...")
+            new = launch_bot(name, use_venv=old.want_venv, install_deps=False,
+                             append_log=True, restarts=old.restarts, quiet=True)
+            if new:
+                notify(f"{Fore.GREEN}✅ Бот {name} перезапущен (PID {new.pid})")
+            else:
+                notify(f"{Fore.RED}❌ Не удалось перезапустить {name} (повторю позже)")
+    if dead:
+        save_state()
+
+
+def monitor_loop():
+    waited = 0
+    while running:
+        time.sleep(1)
+        waited += 1
+        if waited < SETTINGS["monitor_interval"]:
+            continue
+        waited = 0
+        if not SETTINGS["auto_restart"] or not running:
+            continue
+        try:
+            _monitor_once()
+        except Exception as e:
+            log_error(f"monitor: {e}", show=False)
+
+
+def state_saver():
+    while running:
+        save_state()
+        for _ in range(max(1, SETTINGS["state_sync_interval"]) * 5):
+            if not running:
+                return
+            time.sleep(0.2)
+
+
+# ======================================================================
+#  Дочерние терминалы (ott)
+# ======================================================================
+def _join_cmd(args):
+    import shlex
+    return ' '.join(shlex.quote(a) for a in args)
+
+
+class ChildTerm:
+    """
+    Дочернее окно. Раньше хранили PID «лаунчера» (gnome-terminal / cmd start) — он умирает сразу,
+    поэтому закрыть окно было невозможно. Теперь дочерний процесс сам регистрирует свой настоящий PID.
+    """
+    def __init__(self, action, token, launcher):
+        self.action = action
+        self.token = token
+        self.launcher = launcher
+        self.pid = None
+        self.ctime = None
+        self.started = time.time()
+
+    @property
+    def reg_path(self):
+        return os.path.join(CHILD_DIR, self.token + '.json')
+
+    def refresh(self):
+        if self.pid:
+            return
+        data = _read_json(self.reg_path, retries=1)
+        if data and data.get('pid'):
+            self.pid = int(data['pid'])
+            self.ctime = data.get('ctime')
+
+    def alive(self):
+        self.refresh()
+        if self.pid:
+            return pid_alive(self.pid, self.ctime)
+        return time.time() - self.started < 10     # ещё запускается
+
+    def close(self):
+        self.refresh()
+        ok = True
+        if self.pid:
+            ok = terminate_tree(self.pid, grace=1.0)
+        elif self.launcher is not None and self.launcher.poll() is None:
+            ok = terminate_tree(self.launcher.pid, grace=1.0, proc=self.launcher)
+        try:
+            os.remove(self.reg_path)
+        except Exception:
+            pass
+        return ok
+
+
+def _terminal_candidates(args):
+    """Список (имя, команда) способов открыть новое окно терминала на Linux/macOS."""
+    cands = []
+    term_env = os.environ.get('TERMINAL')
+    if os.environ.get('TMUX') and shutil.which('tmux'):
+        cands.append(('tmux', ['tmux', 'new-window', '-n', 'kail', _join_cmd(args)]))
+    has_gui = bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'))
+    if not has_gui:
+        return cands
+    if term_env and shutil.which(term_env):
+        cands.append((term_env, [term_env, '-e'] + args))
+    table = [
+        ('gnome-terminal', lambda a: ['gnome-terminal', '--'] + a),
+        ('konsole', lambda a: ['konsole', '-e'] + a),
+        ('xfce4-terminal', lambda a: ['xfce4-terminal', '-x'] + a),
+        ('mate-terminal', lambda a: ['mate-terminal', '-x'] + a),
+        ('tilix', lambda a: ['tilix', '-e', _join_cmd(a)]),
+        ('lxterminal', lambda a: ['lxterminal', '-e', _join_cmd(a)]),
+        ('terminator', lambda a: ['terminator', '-x'] + a),
+        ('kitty', lambda a: ['kitty'] + a),
+        ('alacritty', lambda a: ['alacritty', '-e'] + a),
+        ('foot', lambda a: ['foot'] + a),
+        ('xterm', lambda a: ['xterm', '-e'] + a),
+        ('x-terminal-emulator', lambda a: ['x-terminal-emulator', '-e'] + a),
+    ]
+    for exe, build in table:
+        if shutil.which(exe):
+            cands.append((exe, build(args)))
+    return cands
+
+
+def _wait_registration(term, timeout):
+    end = time.time() + timeout
+    while time.time() < end:
+        term.refresh()
+        if term.pid:
+            return True
+        if term.launcher is not None:
+            rc = term.launcher.poll()
+            if rc is not None and rc != 0:
+                return False
+        time.sleep(0.1)
+    return False
+
+
+def spawn_child_terminal(action):
+    """Открывает окно дочернего терминала. Возвращает ChildTerm или None."""
+    token = f"{os.getpid()}_{int(time.time() * 1000)}_{random.randint(100, 999)}"
+    args = [_global_python(), SCRIPT_PATH, '--child', action,
+            '--parent-pid', str(os.getpid()), '--child-id', token]
+    save_state()
+    try:
+        os.makedirs(CHILD_DIR, exist_ok=True)
+    except OSError:
+        pass
+
+    if IS_WIN:
+        try:
+            launcher = subprocess.Popen(args, cwd=BASE_DIR, close_fds=True,
+                                        creationflags=subprocess.CREATE_NEW_CONSOLE)
+        except Exception as e:
+            log_error(f"Ошибка запуска дочернего: {e}")
+            return None
+        term = ChildTerm(action, token, launcher)
+        if _wait_registration(term, 12):
+            return term
+        term.close()
+        return None
+
+    for exe, cmd in _terminal_candidates(args):
+        try:
+            launcher = subprocess.Popen(cmd, cwd=BASE_DIR, stdin=subprocess.DEVNULL,
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                        start_new_session=True)
+        except Exception as e:
+            log_error(f"Терминал {exe} не стартовал: {e}", show=False)
+            continue
+        term = ChildTerm(action, token, launcher)
+        if _wait_registration(term, 8):
+            return term
+        term.close()
+    return None
+
+
+def _sweep_child_registry(only_parent=None):
+    """Чистит реестр дочерних окон. only_parent — убить всех детей этого родителя (при выходе)."""
+    for fp in glob.glob(os.path.join(CHILD_DIR, '*.json')):
+        d = _read_json(fp, retries=1)
+        if not d:
+            try:
+                os.remove(fp)
+            except Exception:
+                pass
+            continue
+        pid, par, ct = d.get('pid'), d.get('parent'), d.get('ctime')
+        try:
+            if only_parent is not None:
+                if par != only_parent:
+                    continue
+                if pid and pid_alive(pid, ct):
+                    terminate_tree(pid, grace=1.0)
+                os.remove(fp)
+            else:
+                if not pid_alive(pid, ct):
+                    os.remove(fp)
+                elif par and not pid_alive(par):
+                    terminate_tree(pid, grace=1.0)
+                    os.remove(fp)
+        except Exception:
+            pass
+
+
+def close_child_terminal(action):
+    term = child_terms.pop(action, None)
+    if term is None:
+        return False
+    try:
+        term.close()
+        return True
+    except Exception as e:
+        log_error(f"Ошибка закрытия дочернего: {e}")
+        return False
+
+
+def open_child_terminal(action, inline_fallback=True):
+    """ott -y <action>. Если окно открыть нельзя (нет GUI/ssh) — выполняем прямо здесь."""
+    existing = child_terms.get(action)
+    if existing and existing.alive():
+        print(f"{Fore.YELLOW}Уже открыт '{action}'.")
+        return True
+    if existing:
+        child_terms.pop(action, None)
+
+    parts = action.split()
+    if parts and parts[0].lower() == 'logs':
+        try:
+            ln = int(parts[1])
+        except (ValueError, IndexError):
+            print(f"{Fore.RED}Синтаксис: ott -y logs <num>")
+            return False
+        if not resolve_log_path(ln):
+            print(f"{Fore.RED}Лог бота {ln} ещё не создан. Запустите бота сначала.")
+            return False
+
+    term = spawn_child_terminal(action)
+    if term:
+        child_terms[action] = term
+        print(f"{Fore.GREEN}✅ Дочерний '{action}' открыт (PID {term.pid})")
+        save_state()
+        return True
+
+    if inline_fallback:
+        print(f"{Fore.YELLOW}⚠ Не удалось открыть отдельное окно "
+              f"({'нет графического терминала' if not IS_WIN else 'ошибка консоли'}) — "
+              f"выполняю прямо здесь.")
+        run_child_inline(action)
+        return True
+    print(f"{Fore.RED}❌ Не удалось открыть дочерний терминал.")
+    return False
+
+
+def run_child_inline(action):
+    parts = action.split()
+    if len(parts) == 2 and parts[0].lower() == 'logs':
+        try:
+            n = int(parts[1])
+        except ValueError:
+            return
+        path = resolve_log_path(n)
+        if not path:
+            print(f"{Fore.RED}Лог не найден.")
+            return
+        print(f"{Fore.MAGENTA}Live-режим. Ctrl+C — выйти в консоль.\n")
+        stop_ev = threading.Event()
+        t = threading.Thread(target=_follow_log_thread, args=(path, n, stop_ev), daemon=True)
+        t.start()
+        try:
+            while t.is_alive():
+                time.sleep(0.3)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            stop_ev.set()
+        print(f"\n{Fore.YELLOW}Выход из live-режима.")
+    else:
+        child_execute_action(action, load_state())
+
+
+def cmd_ott_list():
+    for action, t in list(child_terms.items()):
+        if not t.alive():
+            child_terms.pop(action, None)
+            try:
+                os.remove(t.reg_path)
+            except Exception:
+                pass
+    if not child_terms:
+        print(f"{Fore.YELLOW}Нет открытых дочерних терминалов.")
+        return
+    print(f"\n{Fore.CYAN}=== Дочерние терминалы ({len(child_terms)}) ===\n")
+    for i, (action, t) in enumerate(child_terms.items(), 1):
+        status = f"{Fore.GREEN}РАБОТАЕТ" if t.alive() else f"{Fore.RED}ЗАКРЫТ"
+        print(f"  {Fore.WHITE}{i}. [{Fore.LIGHTCYAN_EX}{action}{Fore.WHITE}] PID {t.pid or '…'}  {status}")
+    print(f"\n{Fore.LIGHTBLACK_EX}Закрыть: {Fore.GREEN}ott -n <action>{Fore.LIGHTBLACK_EX}  |  "
+          f"Закрыть все: {Fore.GREEN}ott -n all")
+
+
+# ======================================================================
+#  Логотип
+# ======================================================================
 def show_banner():
+    W = 75
+
+    def row(text, color, left):
+        return f"{Fore.CYAN}║{color}{' ' * left}{text}{' ' * max(0, W - left - len(text))}{Fore.CYAN}║"
+
+    ver = f"Kail Admin  {VERSION}   [Admin bot OS]"
     print(f"""
 {Fore.CYAN}╔═══════════════════════════════════════════════════════════════════════════╗
 {Fore.CYAN}║{Fore.LIGHTGREEN_EX}                                                                           {Fore.CYAN}║
@@ -477,8 +1598,8 @@ def show_banner():
 {Fore.CYAN}║{Fore.LIGHTGREEN_EX}   ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚══════╝   ╚═╝  ╚═╝╚═════╝ ╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝  {Fore.CYAN}║
 {Fore.CYAN}║{Fore.LIGHTGREEN_EX}                                                                           {Fore.CYAN}║
 {Fore.CYAN}╠═══════════════════════════════════════════════════════════════════════════╣
-{Fore.CYAN}║{Fore.YELLOW}                Kail Admin  {VERSION}   [Admin bot OS]                {Fore.CYAN}║
-{Fore.CYAN}║{Fore.MAGENTA}                "exclusively for Qwile Software"                           {Fore.CYAN}║
+{row(ver, Fore.YELLOW, 16)}
+{row('"exclusively for Qwile Software"', Fore.MAGENTA, 16)}
 {Fore.CYAN}╚═══════════════════════════════════════════════════════════════════════════╝
 """)
 
@@ -488,377 +1609,90 @@ def show_logo_only():
     show_banner()
 
 
-# ---------- venv helpers ----------
-def _venv_paths(dir_path):
-    """Возвращает (venv_dir, venv_python, venv_pip) для указанной папки."""
-    venv_dir = os.path.join(dir_path, 'venv')
-    if platform.system() == 'Windows':
-        venv_python = os.path.join(venv_dir, 'Scripts', 'python.exe')
-        venv_pip = os.path.join(venv_dir, 'Scripts', 'pip.exe')
-    else:
-        venv_python = os.path.join(venv_dir, 'bin', 'python3')
-        venv_pip = os.path.join(venv_dir, 'bin', 'pip3')
-    return venv_dir, venv_python, venv_pip
+# ======================================================================
+#  Ввод
+# ======================================================================
+_ANSI_RE = re.compile(r'\033\[[0-9;]*m')
 
 
-def ensure_venv(dir_path):
-    """Создаёт venv, если его нет. Возвращает путь к python venv или None."""
-    venv_dir, venv_python, _ = _venv_paths(dir_path)
-
-    if os.path.exists(venv_python):
-        print(f"{Fore.GREEN}✅ venv уже существует: {venv_dir}")
-        return venv_python
-
-    print(f"{Fore.YELLOW}Создаю venv в {venv_dir}...")
+def _flush_stdin():
+    """Сбрасывает буфер stdin, чтобы мусор от подпроцессов не «съедал» Enter."""
     try:
-        base_python = sys.executable
-        if hasattr(sys, 'real_prefix') or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix):
-            if platform.system() == 'Windows':
-                base_python = os.path.join(sys.base_prefix, 'python.exe')
-            else:
-                base_python = os.path.join(sys.base_prefix, 'bin', 'python3')
-                if not os.path.exists(base_python):
-                    base_python = shutil.which('python3') or shutil.which('python')
+        if IS_WIN:
+            import msvcrt
+            n = 0
+            while msvcrt.kbhit() and n < 2000:
+                msvcrt.getwch()
+                n += 1
+        elif sys.stdin.isatty():
+            import termios
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    except Exception:
+        pass
 
-        r = subprocess.run(
-            [base_python, '-m', 'venv', venv_dir],
-            capture_output=True, text=True, timeout=300,
-            stdin=subprocess.DEVNULL
-        )
-        if r.returncode != 0:
-            print(f"{Fore.RED}❌ Ошибка создания venv: {(r.stderr or '')[-300:]}")
-            return None
-        print(f"{Fore.GREEN}✅ venv создан: {venv_dir}")
+
+def read_line(prompt):
+    global _prompt_visible, _current_prompt
+    _flush_stdin()
+    shown = prompt
+    if HAS_READLINE and not IS_WIN:   # без этого readline неверно считает длину цветного приглашения
+        shown = _ANSI_RE.sub(lambda m: '\001' + m.group(0) + '\002', prompt)
+    _current_prompt = prompt
+    _prompt_visible = True
+    try:
+        return input(shown)
+    finally:
+        _prompt_visible = False
         try:
-            subprocess.run([venv_python, '-m', 'pip', 'install', '--upgrade', 'pip', '--quiet'],
-                           capture_output=True, text=True, timeout=180,
-                           stdin=subprocess.DEVNULL)
+            sys.stdout.write(Fore.RESET)
+            sys.stdout.flush()
         except Exception:
             pass
-        return venv_python
-    except Exception as e:
-        print(f"{Fore.RED}❌ Не удалось создать venv: {e}")
-        log_error(f"venv creation failed: {e}")
-        return None
 
 
-def install_into_venv(venv_python, dir_path, filepath):
-    """Устанавливает зависимости бота в venv."""
-    req_file = os.path.join(dir_path, 'requirements.txt')
-
-    if os.path.isfile(req_file):
-        print(f"{Fore.YELLOW}Устанавливаю requirements.txt в venv...")
-        try:
-            r = subprocess.run(
-                [venv_python, '-m', 'pip', 'install', '-r', req_file],
-                cwd=dir_path, capture_output=True, text=True, timeout=1200,
-                stdin=subprocess.DEVNULL
-            )
-            if r.returncode == 0:
-                print(f"{Fore.GREEN}✅ Requirements установлены в venv.")
-            else:
-                print(f"{Fore.RED}⚠ pip -r fail: {(r.stderr or '')[-300:]}")
-        except Exception as e:
-            log_error(f"venv requirements fail: {e}")
-        return
-
-    imports = get_imports(filepath)
-    if not imports:
-        return
-
-    print(f"{Fore.YELLOW}Проверяю зависимости в venv...")
-    missing = []
-    for module in sorted(imports):
-        try:
-            r = subprocess.run(
-                [venv_python, '-c', f'import {module}'],
-                capture_output=True, text=True, timeout=15,
-                stdin=subprocess.DEVNULL
-            )
-            if r.returncode != 0:
-                missing.append(module)
-        except Exception:
-            missing.append(module)
-
-    if not missing:
-        print(f"{Fore.GREEN}✅ Все зависимости в venv на месте.")
-        return
-
-    print(f"{Fore.YELLOW}Устанавливаю в venv: {Fore.LIGHTCYAN_EX}{', '.join(missing)}")
-    for module in missing:
-        pip_name = PIP_NAME_MAP.get(module, module)
-        print(f"{Fore.YELLOW}→ venv: {Fore.LIGHTCYAN_EX}{pip_name}...")
-        try:
-            r = subprocess.run(
-                [venv_python, '-m', 'pip', 'install', pip_name, '--quiet'],
-                cwd=dir_path, capture_output=True, text=True, timeout=400,
-                stdin=subprocess.DEVNULL
-            )
-            if r.returncode == 0:
-                print(f"{Fore.GREEN}  ✅ {pip_name}")
-            else:
-                print(f"{Fore.RED}  ❌ {pip_name}")
-                log_error(f"venv pip fail {pip_name}: {(r.stderr or '')[:300]}")
-        except Exception as e:
-            print(f"{Fore.RED}  ❌ {pip_name}: {e}")
-            log_error(f"venv pip exception {pip_name}: {e}")
+# ======================================================================
+#  Действия
+# ======================================================================
+def resolve_log_path(n, state=None):
+    if state and state.get("log_files"):
+        p = state["log_files"].get(str(n))
+        if p and os.path.exists(p):
+            return p
+    name = bot_name(n)
+    if name:
+        p = log_path_for(name)
+        if os.path.exists(p):
+            return p
+    legacy = os.path.join(SETTINGS["log_dir"], f"bot_{n}.log")
+    return legacy if os.path.exists(legacy) else None
 
 
-# ---------- Запуск бота (обычный) ----------
-def launch_bot(filepath, num):
-    abs_filepath = os.path.abspath(filepath)
-    dir_path = os.path.dirname(abs_filepath)
-    python_cmd = get_python_command(filepath)
-
-    if not os.path.exists(abs_filepath):
-        log_error(f"Файл {abs_filepath} не найден!")
-        return None
-
-    install_bot_dependencies(dir_path, python_cmd, abs_filepath)
-
-    log_path = os.path.join(SETTINGS["log_dir"], f"bot_{num}.log")
-    log_files[num] = log_path
-    with open(log_path, 'w', encoding='utf-8') as f:
-        f.write(f"=== Логи бота {num} ({filepath}) ===\n")
-        f.write(f"Команда: {python_cmd} {abs_filepath}\n")
-        f.write(f"Рабочая папка: {dir_path}\n")
-        f.write("=" * 50 + "\n\n")
-
-    try:
-        if platform.system() == 'Windows':
-            if python_cmd == 'py':
-                cmd = f'py -3 "{abs_filepath}"'
-            else:
-                cmd = f'"{python_cmd}" "{abs_filepath}"'
-            log_file = open(log_path, 'a', encoding='utf-8')
-            proc = subprocess.Popen(cmd, shell=True, cwd=dir_path,
-                                    stdin=subprocess.DEVNULL,
-                                    stdout=log_file, stderr=subprocess.STDOUT,
-                                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
-        else:
-            real_cmd = python_cmd
-            cmd = f'cd "{dir_path}" && "{real_cmd}" -u "{abs_filepath}"'
-            log_file = open(log_path, 'a', encoding='utf-8')
-            proc = subprocess.Popen(['bash', '-c', cmd],
-                                    stdin=subprocess.DEVNULL,
-                                    stdout=log_file, stderr=subprocess.STDOUT,
-                                    preexec_fn=os.setsid if hasattr(os, 'setsid') else None)
-
-        time.sleep(0.7)
-        if proc.poll() is not None:
-            with open(log_path, 'r', encoding='utf-8') as f:
-                last = f.readlines()[-25:]
-            print(f"{Fore.RED}❌ Бот {num} завершился сразу! Логи:")
-            for line in last:
-                print(f"{Fore.YELLOW}{line.rstrip()}")
-            return None
-
-        return proc
-    except Exception as e:
-        log_error(f"Ошибка запуска бота {num}: {e}")
-        return None
-
-
-# ---------- Запуск бота в venv ----------
-def launch_bot_venv(filepath, num):
-    abs_filepath = os.path.abspath(filepath)
-    dir_path = os.path.dirname(abs_filepath)
-
-    if not os.path.exists(abs_filepath):
-        log_error(f"Файл {abs_filepath} не найден!")
-        return None
-
-    venv_python = ensure_venv(dir_path)
-    if not venv_python:
-        print(f"{Fore.RED}❌ Не удалось подготовить venv.")
-        return None
-
-    install_into_venv(venv_python, dir_path, abs_filepath)
-
-    log_path = os.path.join(SETTINGS["log_dir"], f"bot_{num}.log")
-    log_files[num] = log_path
-    with open(log_path, 'w', encoding='utf-8') as f:
-        f.write(f"=== Логи бота {num} ({filepath}) [venv] ===\n")
-        f.write(f"Команда: {venv_python} {abs_filepath}\n")
-        f.write(f"Рабочая папка: {dir_path}\n")
-        f.write("=" * 50 + "\n\n")
-
-    try:
-        if platform.system() == 'Windows':
-            cmd = f'"{venv_python}" "{abs_filepath}"'
-            log_file = open(log_path, 'a', encoding='utf-8')
-            proc = subprocess.Popen(cmd, shell=True, cwd=dir_path,
-                                    stdin=subprocess.DEVNULL,
-                                    stdout=log_file, stderr=subprocess.STDOUT,
-                                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
-        else:
-            cmd = f'cd "{dir_path}" && "{venv_python}" -u "{abs_filepath}"'
-            log_file = open(log_path, 'a', encoding='utf-8')
-            proc = subprocess.Popen(['bash', '-c', cmd],
-                                    stdin=subprocess.DEVNULL,
-                                    stdout=log_file, stderr=subprocess.STDOUT,
-                                    preexec_fn=os.setsid if hasattr(os, 'setsid') else None)
-
-        time.sleep(0.7)
-        if proc.poll() is not None:
-            with open(log_path, 'r', encoding='utf-8') as f:
-                last = f.readlines()[-25:]
-            print(f"{Fore.RED}❌ Бот {num} [venv] завершился сразу! Логи:")
-            for line in last:
-                print(f"{Fore.YELLOW}{line.rstrip()}")
-            return None
-
-        return proc
-    except Exception as e:
-        log_error(f"Ошибка запуска бота {num} [venv]: {e}")
-        return None
-
-
-def stop_process(proc, num=None):
-    if proc is None:
-        return True
-    try:
-        if platform.system() == 'Windows':
-            subprocess.run(['taskkill', '/F', '/T', '/PID', str(proc.pid)],
-                           capture_output=True, check=False, stdin=subprocess.DEVNULL)
-        else:
-            try:
-                pgid = os.getpgid(proc.pid)
-                os.killpg(pgid, signal.SIGTERM)
-                time.sleep(0.4)
-                os.killpg(pgid, signal.SIGKILL)
-            except Exception:
-                proc.terminate()
-                time.sleep(0.4)
-                if proc.poll() is None:
-                    proc.kill()
-        return True
-    except Exception as e:
-        log_error(f"Ошибка остановки: {e}")
-        return False
-
-
-def monitor_loop():
-    while running:
-        time.sleep(SETTINGS["monitor_interval"])
-        if not running:
-            break
-        if not SETTINGS["auto_restart"]:
-            continue
-        for num in list(processes.keys()):
-            proc = processes.get(num)
-            if proc is None:
-                continue
-            if proc.poll() is not None:
-                idx = num - 1
-                if 0 <= idx < len(file_list):
-                    filepath = file_list[idx]
-                    print(f"\n{Fore.RED}⚠ Бот {num} ({filepath}) упал, перезапускаем...")
-                    del processes[num]
-                    new_proc = launch_bot(filepath, num)
-                    if new_proc:
-                        processes[num] = new_proc
-                        print(f"{Fore.GREEN}✅ Бот {num} перезапущен (PID {new_proc.pid})")
-                    save_state()
-
-
-# ---------- Терминал ----------
-def _make_terminal_cmd(bash_cmd):
-    if shutil.which('gnome-terminal'):
-        return ['gnome-terminal', '--', 'bash', '-c', bash_cmd]
-    elif shutil.which('xterm'):
-        return ['xterm', '-e', 'bash', '-c', bash_cmd]
-    elif shutil.which('konsole'):
-        return ['konsole', '-e', 'bash', '-c', bash_cmd]
-    elif shutil.which('xfce4-terminal'):
-        return ['xfce4-terminal', '-e', 'bash', '-c', bash_cmd]
-    elif shutil.which('mate-terminal'):
-        return ['mate-terminal', '-e', 'bash', '-c', bash_cmd]
-    return None
-
-
-# ---------- Дочерние терминалы ----------
-def spawn_child_terminal(action):
-    script_path = os.path.abspath(__file__)
-    parent_pid = os.getpid()
-    py = sys.executable
-    args = [py, script_path, '--child', action, '--parent-pid', str(parent_pid)]
-    save_state()
-    try:
-        if platform.system() == 'Windows':
-            quoted = ' '.join(f'"{a}"' if ' ' in a else a for a in args)
-            cmd = f'start "CHILD: {action}" cmd /k {quoted}'
-            proc = subprocess.Popen(cmd, shell=True)
-        else:
-            import shlex
-            quoted = ' '.join(shlex.quote(a) for a in args)
-            term_cmd = _make_terminal_cmd(f'{quoted}; exec bash')
-            if not term_cmd:
-                print(f"{Fore.RED}Не найден терминал.")
-                return None
-            proc = subprocess.Popen(term_cmd)
-        return proc
-    except Exception as e:
-        log_error(f"Ошибка запуска дочернего: {e}")
-        return None
-
-
-def close_child_terminal(action):
-    if action in child_processes:
-        proc = child_processes[action]
-        try:
-            if platform.system() == 'Windows':
-                subprocess.run(['taskkill', '/F', '/T', '/PID', str(proc.pid)],
-                               capture_output=True, stdin=subprocess.DEVNULL)
-            else:
-                try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                    time.sleep(0.3)
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except Exception:
-                    proc.terminate()
-            del child_processes[action]
-            return True
-        except Exception as e:
-            log_error(f"Ошибка закрытия дочернего: {e}")
-            return False
-    return False
-
-
-def cmd_ott_list():
-    if not child_processes:
-        print(f"{Fore.YELLOW}Нет открытых дочерних терминалов.")
-        return
-    print(f"\n{Fore.CYAN}=== Дочерние терминалы ({len(child_processes)}) ===\n")
-    for i, (action, proc) in enumerate(child_processes.items(), 1):
-        alive = proc.poll() is None
-        status = f"{Fore.GREEN}РАБОТАЕТ" if alive else f"{Fore.RED}ЗАКРЫТ"
-        print(f"  {Fore.WHITE}{i}. [{Fore.LIGHTCYAN_EX}{action}{Fore.WHITE}] PID {proc.pid}  {status}")
-    print(f"\n{Fore.LIGHTBLACK_EX}Закрыть: {Fore.GREEN}ott -n <action>{Fore.LIGHTBLACK_EX}  |  "
-          f"Закрыть все: {Fore.GREEN}ott -n all")
-
-
-# ---------- Действия ----------
 def action_list(state=None):
     if state is not None:
         files = state.get("file_list", [])
         procs = state.get("process_status", {})
+        extra = {}
     else:
-        files = [f for f in glob.glob('*.py') if os.path.isfile(f)]
-        script_name = os.path.basename(__file__)
-        if script_name in files:
-            files.remove(script_name)
-        files.sort()
-        procs = {str(num): (proc.poll() is None) for num, proc in processes.items()}
+        files = list(file_list)
+        with BOTS_LOCK:
+            procs = {str(i): (n in BOTS and BOTS[n].alive()) for i, n in enumerate(files, 1)}
+            extra = {str(i): BOTS[n] for i, n in enumerate(files, 1) if n in BOTS}
 
     print(f"\n{Fore.CYAN}=== Список файлов ({len(files)}) ===\n")
     if not files:
         print(f"{Fore.YELLOW}Нет .py файлов.")
         return
     for i, f in enumerate(files, 1):
-        is_run = procs.get(str(i), False) if state is not None else (i in processes)
+        is_run = procs.get(str(i), False)
         status = f"{Fore.GREEN}[ЗАПУЩЕН]" if is_run else f"{Fore.RED}[ОСТАНОВЛЕН]"
-        print(f"  {Fore.WHITE}{i}. {f} {status}")
+        tail = ''
+        b = extra.get(str(i))
+        if b is not None:
+            if is_run:
+                tail = f" {Fore.LIGHTBLACK_EX}PID {b.pid}{' venv' if b.venv else ''}"
+            else:
+                tail = f" {Fore.LIGHTBLACK_EX}(упал, код {b.returncode})"
+        print(f"  {Fore.WHITE}{i}. {f} {status}{tail}")
 
 
 def action_settings_show():
@@ -870,46 +1704,45 @@ def action_settings_show():
             print(f"      {Fore.LIGHTBLACK_EX}└─ {desc}")
 
 
-def action_logs(parts):
+def action_logs(parts, state=None):
     """Просмотр логов в текущей консоли (без окна)."""
     if len(parts) < 2:
         print(f"{Fore.RED}Синтаксис: logs <num> | logs all")
         print(f"{Fore.LIGHTBLACK_EX}Для живого просмотра: {Fore.GREEN}ott -y logs <num>")
         return
 
-    if parts[1] == 'all':
+    if parts[1].lower() == 'all':
         print(f"\n{Fore.CYAN}=== Логи всех ботов ===\n")
-        if not log_files:
-            print(f"{Fore.YELLOW}Нет логов. Сначала запустите ботов.")
-            return
-        for num in sorted(log_files.keys()):
-            path = log_files[num]
-            if os.path.exists(path):
-                with open(path, 'r', encoding='utf-8', errors='replace') as f:
-                    lines = f.readlines()
-                print(f"{Fore.YELLOW}--- Бот {num} ({len(lines)} строк) ---")
-                for line in lines[-15:]:
-                    print(f"{Fore.WHITE}{line.rstrip()}")
-                print()
-    else:
-        try:
-            n = int(parts[1])
-            path = log_files.get(n)
+        names = (state or {}).get("file_list") if state else file_list
+        shown = 0
+        for i, name in enumerate(names or [], 1):
+            path = resolve_log_path(i, state)
             if not path:
-                candidate = os.path.join(SETTINGS["log_dir"], f"bot_{n}.log")
-                if os.path.exists(candidate):
-                    path = candidate
-            if path and os.path.exists(path):
-                with open(path, 'r', encoding='utf-8', errors='replace') as f:
-                    lines = f.readlines()
-                print(f"\n{Fore.YELLOW}--- Бот {n} ({len(lines)} строк, последние 30) ---")
-                for line in lines[-30:]:
-                    print(f"{Fore.WHITE}{line.rstrip()}")
-                print(f"\n{Fore.LIGHTBLACK_EX}Live-просмотр: {Fore.GREEN}ott -y logs {n}")
-            else:
-                print(f"{Fore.RED}Лог для бота {n} не найден.")
-        except ValueError:
-            print(f"{Fore.RED}Неверный номер.")
+                continue
+            lines, size = _tail_lines(path, 15)
+            print(f"{Fore.YELLOW}--- Бот {i} ({name}, {size // 1024} КБ) ---")
+            for line in lines:
+                print(f"{Fore.WHITE}{line.rstrip()}")
+            print()
+            shown += 1
+        if not shown:
+            print(f"{Fore.YELLOW}Нет логов. Сначала запустите ботов.")
+        return
+
+    try:
+        n = int(parts[1])
+    except ValueError:
+        print(f"{Fore.RED}Неверный номер.")
+        return
+    path = resolve_log_path(n, state)
+    if not path:
+        print(f"{Fore.RED}Лог для бота {n} не найден.")
+        return
+    lines, size = _tail_lines(path, 30)
+    print(f"\n{Fore.YELLOW}--- Бот {n} (последние 30 строк, {size // 1024} КБ) ---")
+    for line in lines:
+        print(f"{Fore.WHITE}{line.rstrip()}")
+    print(f"\n{Fore.LIGHTBLACK_EX}Live-просмотр: {Fore.GREEN}ott -y logs {n}")
 
 
 def action_info():
@@ -918,14 +1751,21 @@ def action_info():
     print(f"  Архитектура: {Fore.GREEN}{platform.machine()}")
     print(f"  Python:      {Fore.GREEN}{platform.python_version()}")
     print(f"  Имя узла:    {Fore.GREEN}{platform.node()}")
-    print(f"  Процессор:   {Fore.GREEN}{psutil.cpu_count()} ядер ({psutil.cpu_percent(interval=0.3)}%)")
-    mem = psutil.virtual_memory()
-    print(f"  RAM:         {Fore.GREEN}{mem.used/(1024**3):.2f} / {mem.total/(1024**3):.2f} GB ({mem.percent}%)")
+    if psutil:
+        try:
+            print(f"  Процессор:   {Fore.GREEN}{psutil.cpu_count()} ядер ({psutil.cpu_percent(interval=0.3)}%)")
+            mem = psutil.virtual_memory()
+            print(f"  RAM:         {Fore.GREEN}{mem.used / (1024 ** 3):.2f} / {mem.total / (1024 ** 3):.2f} GB ({mem.percent}%)")
+        except Exception as e:
+            log_error(f"Ошибка чтения CPU/RAM: {e}", show=False)
+    else:
+        print(f"  Процессор:   {Fore.GREEN}{os.cpu_count()} ядер {Fore.LIGHTBLACK_EX}(psutil не установлен — подробностей нет)")
     try:
-        d = psutil.disk_usage('.')
-        print(f"  Диск (cwd):  {Fore.GREEN}{d.used/(1024**3):.2f} / {d.total/(1024**3):.2f} GB ({d.percent}%)")
+        d = shutil.disk_usage('.')
+        print(f"  Диск (cwd):  {Fore.GREEN}{(d.total - d.free) / (1024 ** 3):.2f} / {d.total / (1024 ** 3):.2f} GB "
+              f"({(d.total - d.free) * 100 / d.total:.1f}%)")
     except Exception as e:
-        log_error(f"Ошибка чтения диска: {e}")
+        log_error(f"Ошибка чтения диска: {e}", show=False)
 
 
 def action_date():
@@ -940,17 +1780,38 @@ def action_whoami():
     print(f"{Fore.LIGHTCYAN_EX}Пользователь: {Fore.GREEN}{user}")
 
 
-def action_uptime():
+def _boot_timestamp():
+    if psutil:
+        try:
+            return psutil.boot_time()
+        except Exception:
+            pass
+    if IS_WIN:
+        try:
+            import ctypes
+            k = ctypes.windll.kernel32
+            k.GetTickCount64.restype = ctypes.c_ulonglong
+            return time.time() - k.GetTickCount64() / 1000.0
+        except Exception:
+            return None
     try:
-        boot = datetime.fromtimestamp(psutil.boot_time())
-        delta = datetime.now() - boot
-        days = delta.days
-        h, rem = divmod(delta.seconds, 3600)
-        m, s = divmod(rem, 60)
-        print(f"{Fore.LIGHTCYAN_EX}Uptime: {Fore.GREEN}{days}д {h}ч {m}м {s}с")
-        print(f"{Fore.LIGHTCYAN_EX}Загрузка: {Fore.GREEN}{boot.strftime('%Y-%m-%d %H:%M:%S')}")
-    except Exception as e:
-        log_error(f"Ошибка uptime: {e}")
+        with open('/proc/uptime') as f:
+            return time.time() - float(f.read().split()[0])
+    except Exception:
+        return None
+
+
+def action_uptime():
+    ts = _boot_timestamp()
+    if ts is None:
+        print(f"{Fore.YELLOW}Не удалось определить uptime.")
+        return
+    boot = datetime.fromtimestamp(ts)
+    delta = datetime.now() - boot
+    h, rem = divmod(delta.seconds, 3600)
+    m, s = divmod(rem, 60)
+    print(f"{Fore.LIGHTCYAN_EX}Uptime: {Fore.GREEN}{delta.days}д {h}ч {m}м {s}с")
+    print(f"{Fore.LIGHTCYAN_EX}Загрузка: {Fore.GREEN}{boot.strftime('%Y-%m-%d %H:%M:%S')}")
 
 
 def action_history():
@@ -984,7 +1845,7 @@ def action_refresh(state=None):
         print(f"{Fore.GREEN}✅ Состояние синхронизировано с главным терминалом.")
 
 
-# ---------- Команда rename ----------
+# ---------- rename ----------
 def cmd_rename(num_str, newname):
     """sudo rename <num> to <newname> — переименовать файл бота."""
     try:
@@ -992,39 +1853,37 @@ def cmd_rename(num_str, newname):
     except ValueError:
         print(f"{Fore.RED}Неверный номер: {num_str}")
         return
-
-    idx = num - 1
-    if idx < 0 or idx >= len(file_list):
+    old_file = bot_name(num)
+    if not old_file:
         print(f"{Fore.RED}Номер {num} вне списка (всего: {len(file_list)}).")
         return
-
-    old_file = file_list[idx]
     old_abs = os.path.abspath(old_file)
     dir_path = os.path.dirname(old_abs)
 
     newname = newname.strip()
-    if newname.endswith('.py'):
+    if newname.lower().endswith('.py'):
         newname = newname[:-3]
     if not newname:
         print(f"{Fore.RED}Пустое имя.")
         return
-    bad = re.search(r'[\\/<>:"|?*]', newname)
-    if bad:
+    if re.search(r'[\\/<>:"|?*\x00-\x1f]', newname) or newname in ('.', '..') or newname.endswith(('.', ' ')):
         print(f"{Fore.RED}Имя содержит недопустимые символы.")
         return
 
     new_file = newname + '.py'
     new_abs = os.path.join(dir_path, new_file)
-
-    if os.path.exists(new_abs):
+    if _same_path(new_abs, SCRIPT_PATH):
+        print(f"{Fore.RED}Это имя занято самим менеджером.")
+        return
+    if os.path.exists(new_abs) and not (os.path.exists(old_abs) and os.path.samefile(old_abs, new_abs)):
         print(f"{Fore.RED}Файл {new_file} уже существует.")
         return
 
-    if num in processes:
+    with BOTS_LOCK:
+        running_now = old_file in BOTS
+    if running_now:
         print(f"{Fore.YELLOW}Останавливаю бота {num} перед переименованием...")
-        stop_process(processes[num], num)
-        del processes[num]
-
+        stop_bot(old_file)
     try:
         os.rename(old_abs, new_abs)
         print(f"{Fore.GREEN}✅ Переименовано: {old_file} → {new_file}")
@@ -1032,45 +1891,202 @@ def cmd_rename(num_str, newname):
         save_state()
     except Exception as e:
         print(f"{Fore.RED}❌ Ошибка переименования: {e}")
-        log_error(f"rename fail: {e}")
+        log_error(f"rename fail: {e}", show=False)
 
 
-# ---------- Системные команды ----------
+# ======================================================================
+#  Системные команды (sudo ...) — Linux и Windows
+# ======================================================================
+def _is_root():
+    return hasattr(os, 'geteuid') and os.geteuid() == 0
+
+
+def _run_inherit(cmd, timeout=None, shell=False):
+    """Запуск с наследованием консоли: виден вывод, работает ввод пароля sudo (раньше это вешало программу)."""
+    try:
+        return subprocess.run(cmd, shell=shell, timeout=timeout).returncode
+    except subprocess.TimeoutExpired:
+        print(f"{Fore.RED}Таймаут команды.")
+        return 124
+    except FileNotFoundError:
+        print(f"{Fore.RED}Команда не найдена: {cmd[0] if isinstance(cmd, list) else cmd}")
+        return 127
+    except KeyboardInterrupt:
+        print(f"\n{Fore.YELLOW}Прервано.")
+        return 130
+    except Exception as e:
+        log_error(f"Ошибка выполнения команды: {e}")
+        return 1
+
+
+def _sudo_prefix():
+    """[] если root, ['sudo'] если sudo есть и пароль получен / не нужен, None — sudo недоступен."""
+    if IS_WIN or _is_root():
+        return []
+    if not shutil.which('sudo'):
+        return None
+    try:
+        if subprocess.run(['sudo', '-n', 'true'], capture_output=True, timeout=15,
+                          stdin=subprocess.DEVNULL).returncode == 0:
+            return ['sudo']
+    except Exception:
+        pass
+    print(f"{Fore.LIGHTBLACK_EX}Нужны права администратора — введите пароль sudo:")
+    if _run_inherit(['sudo', '-v'], timeout=120) == 0:
+        return ['sudo']
+    return None
+
+
+def _parse_shutdown_args(args):
+    kind, delay, cancel, extra = 'poweroff', 0, False, []
+    for a in args:
+        la = a.lower()
+        if la in ('-r', '--reboot'):
+            kind = 'reboot'
+        elif la in ('-h', '-p', '--poweroff', '--halt', '-halt'):
+            kind = 'poweroff'
+        elif la == '-c':
+            cancel = True
+        elif la == 'now':
+            delay = 0
+        elif la.startswith('+') and la[1:].isdigit():
+            delay = int(la[1:]) * 60
+        elif la in ('-f', '--force'):
+            pass
+        else:
+            extra.append(a)
+    return kind, delay, cancel, extra
+
+
+def _power_windows(kind, delay=0, cancel=False):
+    if cancel:
+        return _run_inherit(['shutdown', '/a'])
+    flag = '/r' if kind == 'reboot' else '/s'
+    return _run_inherit(['shutdown', flag, '/f', '/t', str(int(delay))])
+
+
+def _power_linux(kind):
+    """Цепочка запасных вариантов: systemctl -> shutdown -> reboot/poweroff/halt -> loginctl."""
+    table = {
+        'reboot':   [['systemctl', 'reboot'], ['shutdown', '-r', 'now'], ['reboot']],
+        'poweroff': [['systemctl', 'poweroff'], ['shutdown', '-h', 'now'], ['poweroff']],
+        'halt':     [['systemctl', 'halt'], ['shutdown', '-H', 'now'], ['halt']],
+    }
+    prefix = _sudo_prefix()
+    attempts = []
+    if prefix is not None:
+        attempts += [prefix + c for c in table[kind] if shutil.which(c[0])]
+    if prefix != []:     # без sudo: polkit/logind часто разрешает локальному пользователю
+        if shutil.which('systemctl'):
+            attempts.append(table[kind][0])
+        if shutil.which('loginctl'):
+            attempts.append(['loginctl', kind])
+    if not attempts:
+        print(f"{Fore.RED}❌ Нет ни одного способа выполнить '{kind}' (нужен sudo/systemctl).")
+        return 1
+    last = 1
+    for cmd in attempts:
+        print(f"{Fore.LIGHTBLACK_EX}→ {' '.join(cmd)}")
+        last = _run_inherit(cmd, timeout=60)
+        if last == 0:
+            return 0
+    return last
+
+
+def _win_systemctl(rest):
+    if len(rest) < 2:
+        print(f"{Fore.RED}Пример: sudo systemctl restart <служба>   (start | stop | restart | status)")
+        return 1
+    action, svc = rest[0].lower(), rest[1]
+    if action == 'status':
+        return _run_inherit(['sc', 'query', svc])
+    if action == 'start':
+        return _run_inherit(['net', 'start', svc])
+    if action == 'stop':
+        return _run_inherit(['net', 'stop', svc])
+    if action == 'restart':
+        _run_inherit(['net', 'stop', svc])
+        return _run_inherit(['net', 'start', svc])
+    print(f"{Fore.RED}На Windows поддерживаются: start | stop | restart | status")
+    return 1
+
+
 def execute_system_cmd(cmd_parts):
     if len(cmd_parts) < 2:
         print(f"{Fore.RED}Укажите команду. Пример: sudo reboot")
         return
-    cmd = ' '.join(cmd_parts[1:])
-    print(f"{Fore.YELLOW}Выполняю: {cmd}")
+    args = cmd_parts[1:]
+    name = args[0].lower()
+    rest = args[1:]
+    cmdline = ' '.join(args)
+
+    if IS_WIN and name in LINUX_ONLY_CMDS:
+        print(f"{Fore.RED}❌ '{name}' — команда Linux, на Windows недоступна.")
+        return
+
+    print(f"{Fore.YELLOW}Выполняю: {cmdline}")
     if SETTINGS["sudo_confirm"]:
         print(f"{Fore.RED}⚠ Системная команда!")
-        _flush_stdin()
         try:
-            confirm = input(f"{Fore.YELLOW}Продолжить? (y/N): ").strip().lower()
+            confirm = read_line(f"{Fore.YELLOW}Продолжить? (y/N): ").strip().lower()
         except (KeyboardInterrupt, EOFError):
             confirm = 'n'
-        if confirm != 'y':
+        if confirm not in ('y', 'yes', 'д', 'да'):
             print(f"{Fore.RED}Отменено.")
             return
+
+    rc = 0
     try:
-        if platform.system() == 'Windows':
-            r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        if name in POWER_CMDS:
+            if name == 'reboot':
+                kind, delay, cancel, extra = 'reboot', 0, False, []
+                for a in rest:
+                    if a.startswith('+') and a[1:].isdigit():
+                        delay = int(a[1:]) * 60
+            elif name == 'shutdown':
+                kind, delay, cancel, extra = _parse_shutdown_args(rest)
+            else:
+                kind, delay, cancel, extra = ('poweroff' if name == 'poweroff' else 'halt'), 0, False, []
+            if IS_WIN:
+                if extra:
+                    print(f"{Fore.YELLOW}Параметры {extra} на Windows не поддерживаются — игнорирую.")
+                rc = _power_windows(kind, delay, cancel)
+            elif delay or cancel or extra or (name != 'shutdown' and rest and rest != ['now']):
+                prefix = _sudo_prefix()          # нестандартные параметры — передаём как есть
+                rc = _run_inherit((prefix or []) + args)
+            else:
+                rc = _power_linux(kind)
+            if rc == 0:
+                print(f"{Fore.GREEN}✅ Команда принята системой.")
+        elif name == 'systemctl' and IS_WIN:
+            rc = _win_systemctl(rest)
+        elif IS_WIN:
+            rc = _run_inherit(cmdline, shell=True)
         else:
-            r = subprocess.run(['sudo'] + cmd_parts[1:], capture_output=True, text=True)
-        if r.returncode == 0:
-            print(f"{Fore.GREEN}✅ Выполнено")
-            if r.stdout:
-                print(r.stdout)
+            prefix = _sudo_prefix()
+            if prefix is None:
+                print(f"{Fore.YELLOW}⚠ sudo недоступен — пробую без него.")
+                prefix = []
+            rc = _run_inherit(prefix + args)
+
+        if rc == 0:
+            if name not in POWER_CMDS:
+                print(f"{Fore.GREEN}✅ Выполнено")
         else:
-            print(f"{Fore.RED}❌ Ошибка (код {r.returncode})")
-            if r.stderr:
-                print(r.stderr)
-            log_error(f"Системная команда '{cmd}' завершилась с кодом {r.returncode}")
+            print(f"{Fore.RED}❌ Ошибка (код {rc})")
+            if IS_WIN and name not in POWER_CMDS:
+                print(f"{Fore.LIGHTBLACK_EX}Возможно, нужны права администратора "
+                      f"(запустите консоль «От имени администратора»).")
+            log_error(f"Системная команда '{cmdline}' завершилась с кодом {rc}", show=False)
+    except KeyboardInterrupt:
+        print(f"\n{Fore.YELLOW}Прервано.")
     except Exception as e:
         log_error(f"Ошибка системной команды: {e}")
 
 
-# ---------- Настройки ----------
+# ======================================================================
+#  Настройки (меню)
+# ======================================================================
 def settings_menu():
     while True:
         clear_screen()
@@ -1091,24 +2107,25 @@ def settings_menu():
               f"{Fore.GREEN}reset{Fore.WHITE} - сброс  |  "
               f"{Fore.GREEN}save{Fore.WHITE} - сохранить  |  "
               f"{Fore.GREEN}exit{Fore.WHITE} - назад\n")
-        _flush_stdin()
         try:
-            cmd = input(f"{Fore.YELLOW}settings> {Fore.WHITE}").strip()
+            cmd = read_line(f"{Fore.YELLOW}settings> {Fore.WHITE}").strip()
         except (KeyboardInterrupt, EOFError):
             break
         if not cmd:
             continue
-        if cmd.lower() == 'exit':
+        low = cmd.lower()
+        if low == 'exit':
             break
-        if cmd.lower() == 'save':
+        if low == 'save':
             if save_settings():
                 print(f"{Fore.GREEN}✅ Сохранено в {SETTINGS_FILE}")
             time.sleep(0.8)
             continue
-        if cmd.lower() == 'reset':
+        if low == 'reset':
             for k, v in DEFAULT_SETTINGS.items():
                 SETTINGS[k] = v
             save_settings()
+            _ensure_log_dir()
             print(f"{Fore.GREEN}✅ Сброшено.")
             time.sleep(0.8)
             continue
@@ -1117,36 +2134,72 @@ def settings_menu():
             if 0 <= idx < len(items):
                 key = items[idx]
                 cur = SETTINGS[key]
-                print(f"\n{Fore.LIGHTCYAN_EX}{key}: {Fore.LIGHTBLACK_EX}{SETTINGS_DESCRIPTIONS.get(key,'')}")
+                print(f"\n{Fore.LIGHTCYAN_EX}{key}: {Fore.LIGHTBLACK_EX}{SETTINGS_DESCRIPTIONS.get(key, '')}")
                 print(f"{Fore.WHITE}Текущее: {Fore.GREEN}{cur}")
                 if isinstance(cur, bool):
                     print(f"{Fore.LIGHTBLACK_EX}Введите true/false")
                 elif isinstance(cur, int):
                     print(f"{Fore.LIGHTBLACK_EX}Введите целое число")
-                _flush_stdin()
-                nv = input(f"{Fore.YELLOW}Новое (Enter — отмена): {Fore.WHITE}").strip()
+                nv = read_line(f"{Fore.YELLOW}Новое (Enter — отмена): {Fore.WHITE}").strip()
                 if nv:
-                    if isinstance(cur, bool):
-                        SETTINGS[key] = nv.lower() in ('1','true','yes','y','on','вкл','да')
-                    elif isinstance(cur, int):
-                        SETTINGS[key] = int(nv)
-                    else:
-                        SETTINGS[key] = nv
+                    if isinstance(cur, int) and not isinstance(cur, bool):
+                        int(nv)  # проверка: ValueError -> «Неверный ввод»
+                    SETTINGS[key] = _coerce(key, nv)
+                    if key == 'log_dir':
+                        _ensure_log_dir()
                     save_settings()
                     print(f"{Fore.GREEN}✅ {key} = {SETTINGS[key]}")
                     time.sleep(0.8)
         except ValueError:
             print(f"{Fore.RED}Неверный ввод.")
             time.sleep(0.8)
+        except (KeyboardInterrupt, EOFError):
+            break
 
 
-# ---------- Справка ----------
+def _ensure_log_dir():
+    try:
+        os.makedirs(SETTINGS["log_dir"], exist_ok=True)
+    except OSError as e:
+        log_error(f"Не удалось создать папку логов '{SETTINGS['log_dir']}': {e}; использую 'logs'")
+        SETTINGS["log_dir"] = "logs"
+        try:
+            os.makedirs("logs", exist_ok=True)
+        except OSError:
+            pass
+
+
+# ======================================================================
+#  Справка
+# ======================================================================
 def show_help():
+    if IS_WIN:
+        sudo_block = f"""
+{Fore.LIGHTCYAN_EX}══════════ СИСТЕМНЫЕ КОМАНДЫ (через sudo, Windows) ══════════
+  {Fore.GREEN}sudo reboot             {Fore.WHITE}- перезагрузить систему
+  {Fore.GREEN}sudo shutdown now       {Fore.WHITE}- выключить сейчас
+  {Fore.GREEN}sudo poweroff           {Fore.WHITE}- выключить
+  {Fore.GREEN}sudo halt               {Fore.WHITE}- выключить
+  {Fore.GREEN}sudo systemctl restart <svc>   {Fore.WHITE}- перезапустить службу Windows (start|stop|restart|status)
+  {Fore.GREEN}sudo <команда>          {Fore.WHITE}- любая команда cmd (для служб нужна консоль от администратора)
+"""
+    else:
+        sudo_block = f"""
+{Fore.LIGHTCYAN_EX}══════════ СИСТЕМНЫЕ КОМАНДЫ (через sudo) ══════════
+  {Fore.GREEN}sudo reboot             {Fore.WHITE}- перезагрузить систему
+  {Fore.GREEN}sudo shutdown now       {Fore.WHITE}- выключить сейчас
+  {Fore.GREEN}sudo poweroff           {Fore.WHITE}- выключить
+  {Fore.GREEN}sudo halt               {Fore.WHITE}- остановить
+  {Fore.GREEN}sudo systemctl restart <svc>   {Fore.WHITE}- перезапустить сервис
+  {Fore.GREEN}sudo apt update         {Fore.WHITE}- обновить список пакетов
+  {Fore.GREEN}sudo chmod +x <file>    {Fore.WHITE}- сделать исполняемым
+"""
     print(f"""
 {Fore.LIGHTCYAN_EX}══════════ УПРАВЛЕНИЕ БОТАМИ ══════════
   {Fore.GREEN}list                    {Fore.WHITE}- список .py файлов
-  {Fore.GREEN}run <num>               {Fore.WHITE}- запустить бота
+  {Fore.GREEN}run <num>               {Fore.WHITE}- запустить бота (venv — по настройке use_venv, по умолчанию ВКЛ)
   {Fore.GREEN}run <num> -venv-        {Fore.WHITE}- запустить в отдельном venv
+  {Fore.GREEN}run <num> -novenv-      {Fore.WHITE}- запустить в глобальном Python
   {Fore.GREEN}allrun                  {Fore.WHITE}- запустить всех
   {Fore.GREEN}stop <num>              {Fore.WHITE}- остановить бота
   {Fore.GREEN}stopall                 {Fore.WHITE}- остановить всех
@@ -1176,16 +2229,7 @@ def show_help():
   {Fore.GREEN}banner                  {Fore.WHITE}- показать лого
   {Fore.GREEN}refresh                 {Fore.WHITE}- обновить список файлов
   {Fore.GREEN}echo <text>             {Fore.WHITE}- вывести текст
-
-{Fore.LIGHTCYAN_EX}══════════ СИСТЕМНЫЕ КОМАНДЫ (через sudo) ══════════
-  {Fore.GREEN}sudo reboot             {Fore.WHITE}- перезагрузить систему
-  {Fore.GREEN}sudo shutdown now       {Fore.WHITE}- выключить сейчас
-  {Fore.GREEN}sudo poweroff           {Fore.WHITE}- выключить
-  {Fore.GREEN}sudo halt               {Fore.WHITE}- остановить
-  {Fore.GREEN}sudo systemctl restart <svc>   {Fore.WHITE}- перезапустить сервис
-  {Fore.GREEN}sudo apt update         {Fore.WHITE}- обновить список пакетов
-  {Fore.GREEN}sudo chmod +x <file>    {Fore.WHITE}- сделать исполняемым
-
+{sudo_block}
 {Fore.LIGHTCYAN_EX}══════════ ИНТЕРФЕЙС ══════════
   {Fore.GREEN}settings                {Fore.WHITE}- меню настроек (сохраняются в {SETTINGS_FILE})
   {Fore.GREEN}clear / cls             {Fore.WHITE}- очистить экран (лого остаётся)
@@ -1197,46 +2241,76 @@ def show_help():
 """)
 
 
-# ---------- Child mode ----------
-def _follow_log_thread(log_path, bot_num, stop_event):
-    """Фоновый поток для live-просмотра лога."""
+# ======================================================================
+#  Child mode
+# ======================================================================
+def _follow_log_thread(log_path, bot_num, stop_event, tail_lines=30):
+    """Live-просмотр лога: переживает перезапись лога и неполные строки."""
+    label = f"{Fore.LIGHTCYAN_EX}[bot {bot_num}]{Fore.WHITE}"
     try:
-        with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
-            content = f.read()
-            lines = content.splitlines()
-            tail = lines[-30:] if len(lines) > 30 else lines
-            for line in tail:
+        while not os.path.exists(log_path):
+            if stop_event.wait(0.5):
+                return
+        with open(log_path, 'rb') as f:
+            data = f.read()
+            for line in data.decode('utf-8', 'replace').splitlines()[-tail_lines:]:
                 if stop_event.is_set():
                     return
-                print(f"{Fore.LIGHTCYAN_EX}[bot {bot_num}]{Fore.WHITE} {line}")
+                print(f"{label} {line}")
+            pos = f.tell()
+            buf = b''
             while not stop_event.is_set():
-                line = f.readline()
-                if line:
-                    print(f"{Fore.LIGHTCYAN_EX}[bot {bot_num}]{Fore.WHITE} {line.rstrip()}")
+                try:
+                    size = os.path.getsize(log_path)
+                except OSError:
+                    size = pos
+                if size < pos:     # лог перезаписан (новый запуск бота)
+                    f.seek(0)
+                    pos, buf = 0, b''
+                    print(f"{Fore.YELLOW}--- лог перезапущен ---")
+                chunk = f.read()
+                if chunk:
+                    pos = f.tell()
+                    buf += chunk
+                    *lines, buf = buf.split(b'\n')
+                    for line in lines:
+                        print(f"{label} {line.decode('utf-8', 'replace').rstrip()}")
                 else:
-                    time.sleep(0.3)
-    except FileNotFoundError:
-        print(f"{Fore.RED}Файл лога не найден: {log_path}")
+                    stop_event.wait(0.3)
     except Exception as e:
         print(f"{Fore.RED}Ошибка чтения лога: {e}")
 
 
-def draw_child_header(action, parent_pid):
+def _box(lines, color=Fore.YELLOW, width=62):
+    out = [f"{color}╔{'═' * width}╗"]
+    for text, c in lines:
+        out.append(f"{color}║{c}{text[:width].ljust(width)}{color}║")
+    out.append(f"{color}╚{'═' * width}╝")
+    return '\n'.join(out)
+
+
+def draw_child_header(action, parent_pid, live=False):
     clear_screen()
-    print(f"""
-{Fore.YELLOW}╔══════════════════════════════════════════════════════════════╗
-{Fore.YELLOW}║{Fore.LIGHTRED_EX}          ДОЧЕРНИЙ ТЕРМИНАЛ — CHILD PROCESS               {Fore.YELLOW}║
-{Fore.YELLOW}║{Fore.WHITE}  Родитель: {Fore.LIGHTGREEN_EX}{parent_pid:<10}{Fore.WHITE}  Мой PID: {Fore.LIGHTGREEN_EX}{os.getpid():<15}{Fore.YELLOW}║
-{Fore.YELLOW}║{Fore.WHITE}  Действие: {Fore.LIGHTCYAN_EX}{action:<46}{Fore.YELLOW}║
-{Fore.YELLOW}╚══════════════════════════════════════════════════════════════╝
-{Fore.MAGENTA}  Состояние синхронизируется автоматически каждые {SETTINGS.get('state_sync_interval', 2)}с.
-{Fore.MAGENTA}  Введите {Fore.GREEN}exit{Fore.MAGENTA} для закрытия.\n""")
+    title = "ДОЧЕРНИЙ ТЕРМИНАЛ — " + ("LIVE LOGS" if live else "CHILD PROCESS")
+    print(_box([
+        (title.center(62), Fore.LIGHTRED_EX),
+        (f"  Родитель: {parent_pid:<10}  Мой PID: {os.getpid():<15}", Fore.WHITE),
+        (f"  Действие: {action}", Fore.LIGHTCYAN_EX),
+    ]))
+    if live:
+        print(f"{Fore.MAGENTA}  Live-режим. Нажмите Ctrl+C чтобы выйти.")
+        print(f"{Fore.MAGENTA}  Автоматически закроется при закрытии главного терминала.\n")
+    else:
+        print(f"{Fore.MAGENTA}  Состояние синхронизируется автоматически каждые {SETTINGS.get('state_sync_interval', 2)}с.")
+        print(f"{Fore.MAGENTA}  Введите {Fore.GREEN}exit{Fore.MAGENTA} для закрытия.\n")
 
 
 def child_execute_action(action, state=None):
     parts = action.strip().split()
     if not parts:
         return
+    if state and state.get("file_list") is not None:
+        file_list[:] = state["file_list"]     # номера в child = номера в главном терминале
     cmd = parts[0].lower()
 
     if cmd == 'list':
@@ -1244,7 +2318,7 @@ def child_execute_action(action, state=None):
     elif cmd == 'settings':
         action_settings_show()
     elif cmd == 'logs':
-        action_logs(parts)
+        action_logs(parts, state)
     elif cmd == 'info':
         action_info()
     elif cmd == 'date':
@@ -1279,101 +2353,92 @@ def redraw_child(action, parent_pid, state=None):
         action_list(state)
 
 
-def run_child_mode():
+def _argval(flag, default=None):
     try:
-        action = sys.argv[sys.argv.index('--child') + 1]
+        return sys.argv[sys.argv.index(flag) + 1]
     except (ValueError, IndexError):
-        action = 'help'
-    try:
-        parent_pid = int(sys.argv[sys.argv.index('--parent-pid') + 1])
-    except (ValueError, IndexError):
-        parent_pid = 0
+        return default
 
-    # --- Спец-режим: live-просмотр логов (ott -y logs <num>) ---
-    is_logs_follow = False
-    follow_log_path = None
-    follow_bot_num = None
+
+def _register_child(token, action, parent_pid):
+    """Дочерний процесс сообщает родителю свой НАСТОЯЩИЙ PID — по нему окно можно закрыть."""
+    if not token:
+        return None
+    try:
+        os.makedirs(CHILD_DIR, exist_ok=True)
+    except OSError:
+        return None
+    path = os.path.join(CHILD_DIR, token + '.json')
+    ct = None
+    if psutil:
+        try:
+            ct = psutil.Process().create_time()
+        except Exception:
+            pass
+    _atomic_write_json(path, {"pid": os.getpid(), "action": action, "parent": parent_pid,
+                              "ctime": ct, "started": time.time()})
+    return path
+
+
+def _child_watchdog(parent_pid, reg_path):
+    """Закрывает child, когда умер родитель — даже если child сидит в input()."""
+    interval = max(1, int(SETTINGS.get("child_check_interval", 3)))
+    while True:
+        time.sleep(interval)
+        if parent_pid and not pid_alive(parent_pid):
+            try:
+                if reg_path:
+                    os.remove(reg_path)
+            except Exception:
+                pass
+            os._exit(0)
+
+
+def _run_child_mode_impl():
+    action = _argval('--child', 'help')
+    try:
+        parent_pid = int(_argval('--parent-pid', 0))
+    except (TypeError, ValueError):
+        parent_pid = 0
+    token = _argval('--child-id')
+
+    reg_path = _register_child(token, action, parent_pid)
+    if reg_path:
+        atexit.register(lambda: os.path.exists(reg_path) and os.remove(reg_path))
+    threading.Thread(target=_child_watchdog, args=(parent_pid, reg_path), daemon=True).start()
+    _set_title(f"Kail child: {action}")
+
+    state = load_state()
+    if state and state.get("file_list") is not None:
+        file_list[:] = state["file_list"]
 
     parts = action.strip().split()
-    if len(parts) == 2 and parts[0].lower() == 'logs':
-        try:
-            follow_bot_num = int(parts[1])
-            follow_log_path = os.path.join(SETTINGS["log_dir"], f"bot_{follow_bot_num}.log")
-            is_logs_follow = True
-        except ValueError:
-            pass
 
-    if is_logs_follow:
-        clear_screen()
-        print(f"""{Fore.YELLOW}╔══════════════════════════════════════════════════════════════╗
-{Fore.YELLOW} {Fore.LIGHTRED_EX}          ДОЧЕРНИЙ ТЕРМИНАЛ — LIVE LOGS                   {Fore.YELLOW}
-{Fore.YELLOW} {Fore.WHITE}  Родитель: {Fore.LIGHTGREEN_EX}{parent_pid:<10}{Fore.WHITE}  Мой PID: {Fore.LIGHTGREEN_EX}{os.getpid():<15}{Fore.YELLOW}
-{Fore.YELLOW} {Fore.WHITE}  Бот:      {Fore.LIGHTCYAN_EX}{follow_bot_num:<46}{Fore.YELLOW}
-{Fore.YELLOW}╚══════════════════════════════════════════════════════════════╝
-{Fore.MAGENTA}  Live-режим. Нажмите Ctrl+C чтобы выйти.
-{Fore.MAGENTA}  Автоматически закроется при закрытии главного терминала.\n""")
-
-        if not os.path.exists(follow_log_path):
-            print(f"{Fore.RED}Лог-файл не найден: {follow_log_path}")
-            print(f"{Fore.YELLOW}Сначала запустите бота {follow_bot_num} в главном терминале.")
-            time.sleep(3)
-            return
-
+    # --- Спец-режим: live-просмотр логов (ott -y logs <num>) ---
+    if len(parts) == 2 and parts[0].lower() == 'logs' and parts[1].isdigit():
+        n = int(parts[1])
+        draw_child_header(f"logs {n}", parent_pid, live=True)
+        path = resolve_log_path(n, state) or os.path.join(SETTINGS["log_dir"], f"bot_{n}.log")
         stop_ev = threading.Event()
-        reader = threading.Thread(
-            target=_follow_log_thread,
-            args=(follow_log_path, follow_bot_num, stop_ev),
-            daemon=True
-        )
-        reader.start()
-
-        check_interval = max(1, int(SETTINGS.get("child_check_interval", 3)))
-        last_check = 0
+        t = threading.Thread(target=_follow_log_thread, args=(path, n, stop_ev), daemon=True)
+        t.start()
         try:
-            while True:
-                now = time.time()
-                if now - last_check >= check_interval:
-                    last_check = now
-                    if parent_pid and not psutil.pid_exists(parent_pid):
-                        print(f"\n{Fore.RED}Родитель завершён. Закрываюсь...")
-                        stop_ev.set()
-                        time.sleep(0.5)
-                        break
+            while t.is_alive():
                 time.sleep(0.3)
         except KeyboardInterrupt:
             print(f"\n{Fore.YELLOW}Выход из live-режима.")
-            stop_ev.set()
+        stop_ev.set()
         return
 
     # --- Обычный режим child ---
-    state = load_state()
-
     draw_child_header(action, parent_pid)
     if state:
         action_list(state)
     child_execute_action(action, state)
 
-    check_interval = max(1, int(SETTINGS.get("child_check_interval", 3)))
-    sync_interval = max(1, int(SETTINGS.get("state_sync_interval", 2)))
-    last_parent_check = 0
-    last_state_sync = 0
-
     while True:
-        now = time.time()
-
-        if now - last_parent_check >= check_interval:
-            last_parent_check = now
-            if parent_pid and not psutil.pid_exists(parent_pid):
-                print(f"\n{Fore.RED}Родитель завершён. Закрываюсь...")
-                time.sleep(1)
-                break
-
-        if now - last_state_sync >= sync_interval:
-            last_state_sync = now
-
-        _flush_stdin()
         try:
-            cmd = input(f"{Fore.YELLOW}child [{action}]> {Fore.WHITE}").strip()
+            cmd = read_line(f"{Fore.YELLOW}child [{action}]> {Fore.WHITE}").strip()
         except (KeyboardInterrupt, EOFError):
             break
         if not cmd:
@@ -1386,348 +2451,531 @@ def run_child_mode():
         if low.startswith('ott') and '-n' in cmd.split():
             break
         if low in ('clear', 'cls'):
-            state = load_state()
-            redraw_child(action, parent_pid, state)
+            redraw_child(action, parent_pid, load_state())
             continue
         if low == 'refresh':
-            state = load_state()
-            redraw_child(action, parent_pid, state)
+            redraw_child(action, parent_pid, load_state())
             print(f"{Fore.GREEN}✅ Состояние синхронизировано с главным терминалом.")
             continue
         if low == 'banner':
             show_banner()
             continue
-
-        state = load_state()
-        child_execute_action(cmd, state)
+        try:
+            child_execute_action(cmd, load_state())
+        except Exception as e:
+            log_error(f"child: {e}", show=False)
+            print(f"{Fore.RED}Ошибка: {e}")
 
     print(f"\n{Fore.YELLOW}Дочерний терминал завершён.")
     time.sleep(0.5)
 
 
-# ---------- Главная функция ----------
-def main():
-    if '--child' in sys.argv:
-        run_child_mode()
+def run_child_mode():
+    try:
+        _run_child_mode_impl()
+    except SystemExit:
+        raise
+    except Exception:
+        tb = traceback.format_exc()
+        log_error(f"child crash: {tb}", show=False)
+        print(f"{Fore.RED}{tb}")
+        time.sleep(8)    # окно не исчезает мгновенно — успеете прочитать ошибку
+
+
+# ======================================================================
+#  Загрузочный экран и зависимости самого менеджера
+# ======================================================================
+def _boot_sequence():
+    L = Fore
+    clear_screen()
+    lines = [
+        (f"{L.LIGHTGREEN_EX}[BOOT]{L.RESET} Kail Admin OS initializing...", 0.012),
+        (f"{L.LIGHTGREEN_EX}[BOOT]{L.RESET} Kernel: Python {platform.python_version()}", 0.012),
+        (f"{L.LIGHTGREEN_EX}[BOOT]{L.RESET} Platform: {platform.system()} {platform.release()}", 0.012),
+        (f"{L.LIGHTGREEN_EX}[BOOT]{L.RESET} Arch: {platform.machine()}   Host: {platform.node()}", 0.012),
+        (f"{L.LIGHTYELLOW_EX}[SCAN]{L.RESET} Checking system integrity...", 0.03),
+        (f"{L.LIGHTYELLOW_EX}[SCAN]{L.RESET} Mounting virtual filesystem...", 0.02),
+        (f"{L.LIGHTYELLOW_EX}[SCAN]{L.RESET} Loading security modules...", 0.025),
+        (f"{L.LIGHTGREEN_EX}[ OK ]{L.RESET} Security handshake complete", 0.012),
+        (f"{L.LIGHTCYAN_EX}[NET ]{L.RESET} Establishing local socket...", 0.02),
+        (f"{L.LIGHTGREEN_EX}[ OK ]{L.RESET} Connection secured", 0.012),
+        (f"{L.LIGHTMAGENTA_EX}[CORE]{L.RESET} Decrypting kernel modules...", 0.025),
+        (f"{L.LIGHTGREEN_EX}[ OK ]{L.RESET} Handshake with matrix successful", 0.015),
+    ]
+    for text, d in lines:
+        print(text)
+        time.sleep(d)
+    for _ in range(6):
+        print(f"{L.LIGHTGREEN_EX}{''.join(random.choice('01') for _ in range(64))}")
+        time.sleep(0.02)
+    time.sleep(0.1)
+    clear_screen()
+
+
+def _scan_bar(package, required=True, animate=True):
+    L = Fore
+    bar_len = 28
+    prefix = f"{L.LIGHTYELLOW_EX}[SCAN]{L.RESET} {package:<10}"
+    if animate:
+        for i in range(bar_len + 1):
+            sys.stdout.write(f"\r{prefix} [{L.LIGHTGREEN_EX}{'█' * i}{L.DIM}{'░' * (bar_len - i)}{L.RESET}]")
+            sys.stdout.flush()
+            time.sleep(0.01)
+    if _try_import(package):
+        sys.stdout.write(f"\r{prefix} [{L.LIGHTGREEN_EX}{'█' * bar_len}{L.RESET}] {L.LIGHTGREEN_EX}[ FOUND ]{L.RESET}\n")
+        sys.stdout.flush()
+        return True
+    sys.stdout.write(f"\r{prefix} [{L.LIGHTRED_EX}{'█' * bar_len}{L.RESET}] {L.LIGHTRED_EX}[ MISSING ]{L.RESET}\n")
+    sys.stdout.flush()
+    print(f"{L.LIGHTYELLOW_EX}[PIP ]{L.RESET} Installing {L.LIGHTCYAN_EX}{package}{L.RESET}...")
+    try:
+        _pip_target_install(package)
+    except KeyboardInterrupt:
+        pass
+    if _try_import(package):
+        print(f"{L.LIGHTGREEN_EX}[ OK ]{L.RESET} {package} installed successfully\n")
+        return True
+    if required:
+        print(f"{L.LIGHTRED_EX}[FAIL]{L.RESET} {package} не установился "
+              f"(продолжаю в упрощённом режиме)\n")
+    else:
+        print(f"{L.LIGHTYELLOW_EX}[SKIP]{L.RESET} {package} необязателен — пропускаю\n")
+    return False
+
+
+def _boot_loader(animated=True):
+    global psutil
+    L = Fore
+    if animated:
+        _boot_sequence()
+        print(f"{L.CYAN}{L.BOLD}╔══════════════════════════════════════════════╗")
+        print(f"{L.CYAN}{L.BOLD}║    KAIL ADMIN — BOOT LOADER {VERSION}   ║")
+        print(f"{L.CYAN}{L.BOLD}╚══════════════════════════════════════════════╝\n")
+        print(f"{L.CYAN}[DEPS]{L.RESET} Scanning required modules...\n")
+        _scan_bar('colorama', required=False)
+        _scan_bar('psutil', required=True)
+    elif psutil is None:
+        print(f"{L.YELLOW}[DEPS] psutil не найден — устанавливаю...")
+        _pip_target_install('psutil')
+    if psutil is None:
+        psutil = _try_import('psutil')
+    if psutil is None:
+        print(f"{L.YELLOW}[WARN]{L.RESET} psutil недоступен: часть функций (info, проверка процессов) "
+              f"работает в упрощённом режиме. Ставится так: {sys.executable} -m pip install psutil")
+        time.sleep(1.5 if animated else 0)
+    if not animated:
         return
+    print(f"{L.LIGHTGREEN_EX}[ OK ]{L.RESET} Dependencies ready.")
+    print(f"{L.LIGHTYELLOW_EX}[INFO]{L.RESET} Starting Kail Admin core...\n")
+    total = 24
+    for i in range(total):
+        pct = int((i + 1) / total * 100)
+        bar = '█' * (i + 1) + '░' * (total - i - 1)
+        sys.stdout.write(f"\r{L.CYAN}[LOAD]{L.RESET} [{L.LIGHTGREEN_EX}{bar}{L.RESET}] {pct:3d}%")
+        sys.stdout.flush()
+        time.sleep(0.03)
+    print()
+    time.sleep(0.1)
+    print(f"{L.LIGHTGREEN_EX}[ OK ]{L.RESET} Kernel loaded.")
+    print(f"{L.LIGHTMAGENTA_EX}[INFO]{L.RESET} Welcome to the matrix, operator.")
+    time.sleep(0.5)
+    clear_screen()
 
-    global running, processes, file_list
 
-    scan_files()
-    show_logo_only()
+# ======================================================================
+#  Завершение / сигналы / осиротевшие процессы
+# ======================================================================
+_cleanup_done = False
+_CTRL_REF = None
 
-    monitor_thread = threading.Thread(target=monitor_loop, daemon=True)
-    monitor_thread.start()
 
-    def state_saver():
-        while running:
-            save_state()
-            time.sleep(1)
-
-    state_thread = threading.Thread(target=state_saver, daemon=True)
-    state_thread.start()
-
-    def cleanup():
-        global running
-        running = False
-        try:
-            if os.path.exists(STATE_FILE):
-                os.remove(STATE_FILE)
-        except Exception as e:
-            log_error(f"Не удалось удалить state: {e}")
-        for action in list(child_processes.keys()):
+def cleanup():
+    global running, _cleanup_done
+    running = False
+    if _cleanup_done:
+        return
+    _cleanup_done = True
+    try:
+        for action in list(child_terms.keys()):
             try:
                 close_child_terminal(action)
             except Exception:
                 pass
-        child_processes.clear()
-        for key in list(log_windows.keys()):
-            try:
-                if platform.system() == 'Windows':
-                    subprocess.run(['taskkill', '/F', '/T', '/PID', str(log_windows[key].pid)], capture_output=True)
-                else:
-                    os.killpg(os.getpgid(log_windows[key].pid), signal.SIGTERM)
-            except:
-                pass
-        log_windows.clear()
-        if processes:
+        _sweep_child_registry(only_parent=os.getpid())
+        if BOTS:
             print(f"\n{Fore.RED}Останавливаем все процессы...")
-            for idx in list(processes.keys()):
-                stop_process(processes[idx], idx)
-            processes.clear()
-    atexit.register(cleanup)
+            stop_all_bots()
+    except Exception as e:
+        log_error(f"cleanup: {e}", show=False)
+    try:
+        if os.path.exists(STATE_FILE):
+            os.remove(STATE_FILE)
+    except Exception as e:
+        log_error(f"Не удалось удалить state: {e}", show=False)
 
-    while running:
-        # КРИТИЧНО: сбрасываем буфер stdin, чтобы мусор от подпроцессов
-        # не «съедал» первый Enter пользователя.
-        _flush_stdin()
+
+def _install_exit_handlers():
+    """Закрыли окно / kill / logoff — боты останавливаются, а не остаются «осиротевшими»."""
+    def graceful(signum=None, frame=None):
         try:
-            cmd = input(f"{Fore.YELLOW}Kail~Admin$: {Fore.WHITE}").strip()
-        except (KeyboardInterrupt, EOFError):
-            print(f"\n{Fore.RED}Выход...")
-            break
+            cleanup()
+        finally:
+            os._exit(0)
 
-        if not cmd:
-            continue
-
-        command_history.append(cmd)
-        parts = cmd.split()
-        command = parts[0].lower()
-
-        # ---- ИНТЕРФЕЙС ----
-        if command in ('clear', 'cls'):
-            show_logo_only()
-            continue
-
-        if command == 'help':
-            print()
-            show_help()
-            continue
-
-        if command == 'banner':
-            show_banner()
-            continue
-
-        if command == 'settings':
-            settings_menu()
-            show_logo_only()
-            continue
-
-        if command == 'exit':
-            print(f"{Fore.RED}Выход...")
-            running = False
-            break
-
-        # ---- БОТЫ ----
-        if command == 'list':
-            action_list()
-            continue
-
-        if command == 'run':
-            if len(parts) < 2:
-                print(f"{Fore.RED}Пример: run 1  |  run 1 -venv-")
-                continue
-            use_venv = (len(parts) >= 3 and parts[2] == '-venv-')
+    for sig_name in ('SIGTERM', 'SIGHUP', 'SIGBREAK'):
+        sig = getattr(signal, sig_name, None)
+        if sig is not None:
             try:
-                idx = int(parts[1]) - 1
-                if idx < 0 or idx >= len(file_list):
-                    print(f"{Fore.RED}Неверный номер.")
-                    continue
-                filepath = file_list[idx]
-                num = idx + 1
-                if num in processes:
-                    print(f"{Fore.YELLOW}Перезапускаю бота {num}...")
-                    stop_process(processes[num], num)
-                    del processes[num]
-                if use_venv:
-                    print(f"{Fore.MAGENTA}Запуск {filepath} в изолированном venv...")
-                    proc = launch_bot_venv(filepath, num)
-                else:
-                    print(f"{Fore.CYAN}Запуск {filepath}...")
-                    proc = launch_bot(filepath, num)
-                if proc:
-                    processes[num] = proc
-                    tag = " [venv]" if use_venv else ""
-                    print(f"{Fore.GREEN}✅ Бот {num} запущен{tag} (PID {proc.pid})")
-                    save_state()
-                else:
-                    print(f"{Fore.RED}❌ Ошибка запуска.")
-            except ValueError:
-                print(f"{Fore.RED}Номер — целое число.")
-            continue
+                signal.signal(sig, graceful)
+            except Exception:
+                pass
+    if IS_WIN:
+        try:
+            import ctypes
+            global _CTRL_REF
+            handler_t = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_uint)
 
-        if command == 'allrun':
-            if not file_list:
-                print(f"{Fore.RED}Нет файлов.")
-                continue
-            print(f"{Fore.CYAN}Запуск всех...")
-            s = 0
-            for i, filepath in enumerate(file_list, 1):
-                if i in processes:
+            def ctrl(event):
+                if event in (2, 5, 6):      # CLOSE / LOGOFF / SHUTDOWN
+                    graceful()
+                return 0
+
+            _CTRL_REF = handler_t(ctrl)
+            ctypes.windll.kernel32.SetConsoleCtrlHandler(_CTRL_REF, True)
+        except Exception:
+            pass
+
+
+def _looks_like_manager(pid):
+    if not psutil:
+        return True
+    try:
+        cmd = ' '.join(psutil.Process(pid).cmdline()).lower()
+        return os.path.basename(SCRIPT_PATH).lower() in cmd
+    except Exception:
+        return False
+
+
+def reap_orphans():
+    """После аварийного выхода боты могли остаться живыми — второй экземпляр даёт Telegram Conflict."""
+    st = load_state()
+    if st:
+        mp = st.get('manager_pid')
+        if mp and mp != os.getpid() and pid_alive(mp) and _looks_like_manager(mp):
+            print(f"{Fore.YELLOW}⚠ Уже запущен другой экземпляр Kail Admin (PID {mp}). "
+                  f"Два менеджера одновременно будут дублировать ботов!")
+            return
+        killed = 0
+        names = st.get('file_list') or []
+        if psutil:
+            for num, pid in (st.get('processes') or {}).items():
+                try:
+                    pid = int(pid)
+                    idx = int(num) - 1
+                    if not (0 <= idx < len(names)) or not pid_alive(pid):
+                        continue
+                    cmd = ' '.join(psutil.Process(pid).cmdline()).lower()
+                    if os.path.basename(names[idx]).lower() in cmd:
+                        terminate_tree(pid, grace=2, group=not IS_WIN)
+                        killed += 1
+                except Exception:
                     continue
-                proc = launch_bot(filepath, i)
-                if proc:
-                    processes[i] = proc
-                    print(f"{Fore.GREEN}✅ Бот {i} запущен (PID {proc.pid})")
-                    s += 1
-                else:
-                    print(f"{Fore.RED}❌ Ошибка бота {i}")
-                time.sleep(1)
-            print(f"{Fore.GREEN}Запущено {s} из {len(file_list)}.")
+        if killed:
+            print(f"{Fore.YELLOW}⚠ Найдено и остановлено осиротевших ботов после прошлого сеанса: {killed}")
+        try:
+            os.remove(STATE_FILE)
+        except Exception:
+            pass
+    _sweep_child_registry()
+
+
+# ======================================================================
+#  Команды
+# ======================================================================
+def _bot_by_arg(parts, example):
+    """Возвращает (num, name) или None, печатая понятную ошибку."""
+    if len(parts) < 2:
+        print(f"{Fore.RED}Пример: {example}")
+        return None
+    try:
+        num = int(parts[1])
+    except ValueError:
+        print(f"{Fore.RED}Номер — целое число.")
+        return None
+    name = bot_name(num)
+    if not name:
+        print(f"{Fore.RED}Неверный номер.")
+        return None
+    return num, name
+
+
+def _start_bot(num, name, use_venv=None):
+    with BOTS_LOCK:
+        was = name in BOTS
+    if was:
+        print(f"{Fore.YELLOW}Перезапускаю бота {num}...")
+        stop_bot(name)
+    mode_venv = SETTINGS["use_venv"] if use_venv is None else use_venv
+    if mode_venv:
+        print(f"{Fore.MAGENTA}Запуск {name} в изолированном venv...")
+    else:
+        print(f"{Fore.CYAN}Запуск {name}...")
+    bot = launch_bot(name, use_venv=use_venv)
+    if bot:
+        tag = " [venv]" if bot.venv else ""
+        print(f"{Fore.GREEN}✅ Бот {num} запущен{tag} (PID {bot.pid})")
+        save_state()
+        if SETTINGS["auto_open_logs"]:
+            try:
+                open_child_terminal(f"logs {num}", inline_fallback=False)
+            except Exception as e:
+                log_error(f"auto_open_logs: {e}", show=False)
+        return True
+    print(f"{Fore.RED}❌ Ошибка запуска.")
+    return False
+
+
+def handle_command(cmd):
+    """Обрабатывает одну команду. False — выйти из программы."""
+    global running
+    parts = cmd.split()
+    command = parts[0].lower()
+
+    # ---- ИНТЕРФЕЙС ----
+    if command in ('clear', 'cls'):
+        show_logo_only()
+        return True
+    if command == 'help':
+        print()
+        show_help()
+        return True
+    if command == 'banner':
+        show_banner()
+        return True
+    if command == 'settings':
+        settings_menu()
+        show_logo_only()
+        return True
+    if command == 'exit':
+        print(f"{Fore.RED}Выход...")
+        running = False
+        return False
+
+    # ---- БОТЫ ----
+    if command == 'list':
+        action_list()
+        return True
+
+    if command == 'run':
+        r = _bot_by_arg(parts, "run 1  |  run 1 -venv-  |  run 1 -novenv-")
+        if r:
+            flags = [p.lower() for p in parts[2:]]
+            use_venv = True if '-venv-' in flags else (False if '-novenv-' in flags else None)
+            _start_bot(r[0], r[1], use_venv)
+        return True
+
+    if command == 'allrun':
+        if not file_list:
+            print(f"{Fore.RED}Нет файлов.")
+            return True
+        print(f"{Fore.CYAN}Запуск всех...")
+        ok_count = 0
+        for i, name in enumerate(list(file_list), 1):
+            with BOTS_LOCK:
+                b = BOTS.get(name)
+                if b and b.alive():
+                    continue
+            bot = launch_bot(name)
+            if bot:
+                print(f"{Fore.GREEN}✅ Бот {i} запущен (PID {bot.pid})")
+                ok_count += 1
+            else:
+                print(f"{Fore.RED}❌ Ошибка бота {i}")
+            time.sleep(0.5)
+        print(f"{Fore.GREEN}Запущено {ok_count} из {len(file_list)}.")
+        save_state()
+        return True
+
+    if command == 'stop':
+        r = _bot_by_arg(parts, "stop 1")
+        if not r:
+            return True
+        num, name = r
+        with BOTS_LOCK:
+            present = name in BOTS
+        if not present:
+            print(f"{Fore.RED}Бот {num} не запущен.")
+            return True
+        print(f"{Fore.YELLOW}Останавливаю бота {num}...")
+        stop_bot(name)
+        print(f"{Fore.GREEN}✅ Остановлен.")
+        save_state()
+        return True
+
+    if command == 'stopall':
+        with BOTS_LOCK:
+            nums = [i for i, n in enumerate(file_list, 1) if n in BOTS]
+        if not nums:
+            print(f"{Fore.RED}Нет ботов.")
+            return True
+        print(f"{Fore.YELLOW}Останавливаю всех...")
+        stop_all_bots()
+        for n in nums:
+            print(f"  Бот {n} остановлен.")
+        print(f"{Fore.GREEN}✅ Все остановлены.")
+        save_state()
+        return True
+
+    if command == 'restart':
+        r = _bot_by_arg(parts, "restart 1")
+        if not r:
+            return True
+        num, name = r
+        with BOTS_LOCK:
+            old = BOTS.get(name)
+        want = old.want_venv if old else None
+        print(f"{Fore.YELLOW}Перезапуск {num}...")
+        if old:
+            stop_bot(name)
+            time.sleep(0.5)
+        else:
+            print(f"{Fore.LIGHTBLACK_EX}(бот не был запущен — просто запускаю)")
+        bot = launch_bot(name, use_venv=want)
+        if bot:
+            print(f"{Fore.GREEN}✅ Бот {num} перезапущен (PID {bot.pid})")
             save_state()
-            continue
+        else:
+            print(f"{Fore.RED}❌ Ошибка.")
+        return True
 
-        if command == 'stop':
-            if len(parts) < 2:
-                print(f"{Fore.RED}Пример: stop 1")
-                continue
-            try:
-                num = int(parts[1])
-                if num not in processes:
-                    print(f"{Fore.RED}Бот {num} не запущен.")
-                    continue
-                print(f"{Fore.YELLOW}Останавливаю бота {num}...")
-                if stop_process(processes[num], num):
-                    del processes[num]
-                    print(f"{Fore.GREEN}✅ Остановлен.")
-                    save_state()
-            except ValueError:
-                print(f"{Fore.RED}Номер — целое число.")
-            continue
+    if command == 'kill':
+        r = _bot_by_arg(parts, "kill 1")
+        if not r:
+            return True
+        num, name = r
+        with BOTS_LOCK:
+            present = name in BOTS
+        if not present:
+            print(f"{Fore.RED}Бот {num} не запущен.")
+            return True
+        stop_bot(name, force=True)
+        print(f"{Fore.GREEN}✅ Бот {num} убит.")
+        save_state()
+        return True
 
-        if command == 'stopall':
-            if not processes:
-                print(f"{Fore.RED}Нет ботов.")
-                continue
-            print(f"{Fore.YELLOW}Останавливаю всех...")
-            for num in list(processes.keys()):
-                stop_process(processes[num], num)
-                print(f"  Бот {num} остановлен.")
-            processes.clear()
-            print(f"{Fore.GREEN}✅ Все остановлены.")
-            save_state()
-            continue
+    # ---- ЛОГИ ----
+    if command == 'logs':
+        action_logs(parts)
+        return True
+    if command == 'logclose':
+        print(f"{Fore.YELLOW}Окна логов открываются только в дочернем терминале (ott -y logs <num>).")
+        return True
 
-        if command == 'restart':
-            if len(parts) < 2:
-                print(f"{Fore.RED}Пример: restart 1")
-                continue
-            try:
-                num = int(parts[1])
-                if num not in processes:
-                    print(f"{Fore.RED}Бот {num} не запущен.")
-                    continue
-                filepath = file_list[num-1]
-                print(f"{Fore.YELLOW}Перезапуск {num}...")
-                stop_process(processes[num], num)
-                del processes[num]
-                time.sleep(1)
-                proc = launch_bot(filepath, num)
-                if proc:
-                    processes[num] = proc
-                    print(f"{Fore.GREEN}✅ Бот {num} перезапущен (PID {proc.pid})")
-                    save_state()
-                else:
-                    print(f"{Fore.RED}❌ Ошибка.")
-            except ValueError:
-                print(f"{Fore.RED}Номер — целое число.")
-            continue
-
-        if command == 'kill':
-            if len(parts) < 2:
-                print(f"{Fore.RED}Пример: kill 1")
-                continue
-            try:
-                num = int(parts[1])
-                if num not in processes:
-                    print(f"{Fore.RED}Бот {num} не запущен.")
-                    continue
-                proc = processes[num]
-                if platform.system() == 'Windows':
-                    subprocess.run(['taskkill', '/F', '/T', '/PID', str(proc.pid)], capture_output=True)
-                else:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                del processes[num]
-                print(f"{Fore.GREEN}✅ Бот {num} убит.")
-                save_state()
-            except ValueError:
-                print(f"{Fore.RED}Номер — целое число.")
-            continue
-
-        # ---- ЛОГИ ----
-        if command == 'logs':
-            action_logs(parts)
-            continue
-
-        if command == 'logclose':
-            print(f"{Fore.YELLOW}Окна логов открываются только в дочернем терминале (ott -y logs <num>).")
-            continue
-
-        # ---- ДОЧЕРНИЕ ТЕРМИНАЛЫ ----
-        if command == 'ott':
-            if len(parts) >= 2 and parts[1].lower() == 'list':
-                cmd_ott_list()
-                continue
-            if len(parts) >= 3 and parts[1] == '-n' and parts[2].lower() == 'all':
-                if not child_processes:
+    # ---- ДОЧЕРНИЕ ТЕРМИНАЛЫ ----
+    if command == 'ott':
+        sub = parts[1].lower() if len(parts) >= 2 else ''
+        if sub == 'list':
+            cmd_ott_list()
+            return True
+        if sub == '-n' and len(parts) >= 3:
+            if parts[2].lower() == 'all':
+                if not child_terms:
                     print(f"{Fore.YELLOW}Нет открытых дочерних.")
-                    continue
-                for action in list(child_processes.keys()):
+                    return True
+                for action in list(child_terms.keys()):
                     close_child_terminal(action)
                 print(f"{Fore.GREEN}✅ Все дочерние закрыты.")
+                save_state()
+                return True
+            action = ' '.join(parts[2:])
+            if close_child_terminal(action):
+                print(f"{Fore.GREEN}✅ Дочерний '{action}' закрыт.")
+                save_state()
+            else:
+                print(f"{Fore.RED}Не найден '{action}'.")
+            return True
+        if sub == '-y' and len(parts) >= 3:
+            open_child_terminal(' '.join(parts[2:]))
+            return True
+        print(f"{Fore.RED}Синтаксис: ott list | ott -y <action> | ott -n <action> | ott -n all")
+        print(f"{Fore.YELLOW}Пример: ott -y logs 4 | ott -y list | ott -y settings")
+        return True
+
+    # ---- СИСТЕМА ----
+    if command == 'sudo':
+        if len(parts) >= 5 and parts[1].lower() == 'rename' and parts[3].lower() == 'to':
+            cmd_rename(parts[2], parts[4])
+            return True
+        execute_system_cmd(parts)
+        return True
+
+    simple = {'info': action_info, 'date': action_date, 'whoami': action_whoami,
+              'uptime': action_uptime, 'history': action_history, 'version': action_version}
+    if command in simple:
+        simple[command]()
+        return True
+    if command == 'echo':
+        print(' '.join(parts[1:]))
+        return True
+    if command == 'refresh':
+        action_refresh()
+        print(f"{Fore.GREEN}Состояние синхронизировано с дочерними терминалами.")
+        return True
+
+    print(f"{Fore.RED}❌ Неизвестная команда: {command}. Введите help.")
+    return True
+
+
+# ======================================================================
+#  Главная функция
+# ======================================================================
+def main():
+    _enable_windows_ansi()
+    load_settings()
+
+    if '--child' in sys.argv:
+        run_child_mode()
+        return
+
+    _ensure_log_dir()
+    try:
+        if os.path.exists(ERROR_LOG_FILE) and os.path.getsize(ERROR_LOG_FILE) > 2 * 1024 * 1024:
+            os.replace(ERROR_LOG_FILE, ERROR_LOG_FILE + '.old')
+    except Exception:
+        pass
+
+    _boot_loader(SETTINGS["boot_animation"])
+
+    scan_files()
+    reap_orphans()
+    show_logo_only()
+
+    threading.Thread(target=monitor_loop, daemon=True).start()
+    threading.Thread(target=state_saver, daemon=True).start()
+    _install_exit_handlers()
+    atexit.register(cleanup)
+
+    try:
+        while running:
+            try:
+                line = read_line(f"{Fore.YELLOW}Kail~Admin$: {Fore.WHITE}")
+            except (KeyboardInterrupt, EOFError):
+                print(f"\n{Fore.RED}Выход...")
+                break
+
+            line = line.strip()
+            if not line:
                 continue
-            if len(parts) >= 3 and parts[1] == '-n':
-                action = ' '.join(parts[2:])
-                if close_child_terminal(action):
-                    print(f"{Fore.GREEN}✅ Дочерний '{action}' закрыт.")
-                else:
-                    print(f"{Fore.RED}Не найден '{action}'.")
-                continue
-            if len(parts) >= 3 and parts[1] == '-y':
-                action = ' '.join(parts[2:])
-                if action in child_processes and child_processes[action].poll() is None:
-                    print(f"{Fore.YELLOW}Уже открыт '{action}'.")
-                    continue
-                if action.startswith('logs '):
-                    try:
-                        ln = int(action.split()[1])
-                        log_path = os.path.join(SETTINGS["log_dir"], f"bot_{ln}.log")
-                        if not os.path.exists(log_path):
-                            print(f"{Fore.RED}Лог бота {ln} ещё не создан. Запустите бота сначала.")
-                            continue
-                    except (ValueError, IndexError):
-                        print(f"{Fore.RED}Синтаксис: ott -y logs <num>")
-                        continue
-                proc = spawn_child_terminal(action)
-                if proc:
-                    child_processes[action] = proc
-                    print(f"{Fore.GREEN}✅ Дочерний '{action}' открыт (PID {proc.pid})")
-                else:
-                    print(f"{Fore.RED}❌ Не удалось открыть.")
-                continue
-            print(f"{Fore.RED}Синтаксис: ott list | ott -y <action> | ott -n <action> | ott -n all")
-            print(f"{Fore.YELLOW}Пример: ott -y logs 4 | ott -y list | ott -y settings")
-            continue
-
-        # ---- СИСТЕМА ----
-        if command == 'sudo':
-            if (len(parts) >= 5 and parts[1].lower() == 'rename'
-                    and parts[3].lower() == 'to'):
-                cmd_rename(parts[2], parts[4])
-                continue
-            execute_system_cmd(parts)
-            continue
-
-        if command == 'info':
-            action_info()
-            continue
-        if command == 'date':
-            action_date()
-            continue
-        if command == 'whoami':
-            action_whoami()
-            continue
-        if command == 'uptime':
-            action_uptime()
-            continue
-        if command == 'history':
-            action_history()
-            continue
-        if command == 'version':
-            action_version()
-            continue
-        if command == 'echo':
-            print(' '.join(parts[1:]))
-            continue
-
-        if command == 'refresh':
-            action_refresh()
-            print(f"{Fore.GREEN}Состояние синхронизировано с дочерними терминалами.")
-            continue
-
-        print(f"{Fore.RED}❌ Неизвестная команда: {command}. Введите help.")
-
-    cleanup()
+            command_history.append(line)
+            try:
+                if not handle_command(line):
+                    break
+            except KeyboardInterrupt:
+                print(f"\n{Fore.YELLOW}Операция прервана.")
+            except Exception as e:
+                log_error(f"Ошибка команды '{line}': {e}\n{traceback.format_exc()}")
+    finally:
+        cleanup()
 
 
 if __name__ == '__main__':
