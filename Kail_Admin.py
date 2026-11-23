@@ -178,8 +178,11 @@ SETTINGS_FILE = "kail_settings.json"
 STATE_FILE = "kail_state.json"
 ERROR_LOG_FILE = "kail_errors.log"
 CHILD_DIR = "kail_children"
+BOT_DIR = "kail_bots"          # реестр окон ботов (PID, код выхода)
 
 DEFAULT_SETTINGS = {
+    "bot_window": True,
+    "window_hold": 10,
     "monitor_interval": 30,
     "auto_restart": True,
     "max_restarts": 5,
@@ -196,6 +199,8 @@ DEFAULT_SETTINGS = {
 }
 
 SETTINGS_DESCRIPTIONS = {
+    "bot_window":            "Каждый бот — в своём окне консоли (Linux/Windows), как при ручном запуске. Вывод пишется и в лог.",
+    "window_hold":           "Сколько секунд окно бота остаётся открытым после его падения (прочитать ошибку).",
     "monitor_interval":      "Интервал проверки ботов (секунд).",
     "auto_restart":          "Авто-перезапуск упавших ботов (true/false).",
     "max_restarts":          "Макс. авто-перезапусков бота за 10 минут (защита от бесконечного цикла).",
@@ -213,7 +218,7 @@ SETTINGS_DESCRIPTIONS = {
 
 SETTINGS_MIN = {
     "monitor_interval": 1, "max_restarts": 1, "stop_grace": 0,
-    "child_check_interval": 1, "state_sync_interval": 1,
+    "child_check_interval": 1, "state_sync_interval": 1, "window_hold": 0,
 }
 
 SETTINGS = dict(DEFAULT_SETTINGS)
@@ -317,7 +322,7 @@ def _read_json(path, retries=3):
 # ======================================================================
 #  Глобальное состояние
 # ======================================================================
-VERSION = "v21112026.2250"
+VERSION = "v23112026.2045"
 PRODUCT_NAME = "Kail Admin"
 
 BOTS = {}                      # имя файла -> Bot
@@ -1030,8 +1035,89 @@ def ensure_venv(dir_path, quiet=False):
 # ======================================================================
 #  Боты
 # ======================================================================
+class WindowProc:
+    """
+    Бот, запущенный в отдельном окне консоли. Ведёт себя как subprocess.Popen (pid/poll/wait),
+    но состояние берёт из реестра kail_bots/<token>.json, который пишет процесс-обёртка в окне.
+    """
+    def __init__(self, token, launcher=None, via=''):
+        self.token = token
+        self.launcher = launcher
+        self.via = via
+        self.pid = None
+        self.ctime = None
+        self.started = time.time()
+        self.user_closed = False     # окно закрыли / Ctrl+C в окне — это не падение
+        self._rc = None
+
+    @property
+    def reg_path(self):
+        return os.path.join(BOT_DIR, self.token + '.json')
+
+    def refresh(self):
+        data = _read_json(self.reg_path, retries=1)
+        if not data:
+            return
+        if data.get('pid') and not self.pid:
+            self.pid = int(data['pid'])
+            self.ctime = data.get('ctime')
+        if data.get('exit') is not None:
+            self._rc = int(data['exit'])
+        self.user_closed = bool(data.get('closed'))
+
+    def wait_registered(self, timeout):
+        end = time.time() + timeout
+        while time.time() < end:
+            self.refresh()
+            if self.pid:
+                return True
+            if self.launcher is not None:
+                rc = self.launcher.poll()
+                if rc is not None and rc != 0:
+                    return False
+            time.sleep(0.1)
+        return False
+
+    def poll(self):
+        if self._rc is None:
+            self.refresh()
+        if self._rc is not None:
+            return self._rc
+        if self.pid:
+            if pid_alive(self.pid, self.ctime):
+                return None
+            self.refresh()
+            return self._rc if self._rc is not None else -1
+        if self.launcher is not None:
+            rc = self.launcher.poll()
+            if rc not in (None, 0):
+                return rc
+        return None if time.time() - self.started < 20 else -1
+
+    @property
+    def returncode(self):
+        return self.poll()
+
+    def wait(self, timeout=None):
+        end = time.time() + timeout if timeout else None
+        while True:
+            rc = self.poll()
+            if rc is not None:
+                return rc
+            if end and time.time() > end:
+                raise subprocess.TimeoutExpired('bot-window', timeout)
+            time.sleep(0.1)
+
+    def cleanup(self):
+        try:
+            os.remove(self.reg_path)
+        except Exception:
+            pass
+
+
 class Bot:
-    def __init__(self, name, proc, python, venv, want_venv, log_path, restarts=None):
+    def __init__(self, name, proc, python, venv, want_venv, log_path, restarts=None, window=False):
+        self.window = window
         self.name = name
         self.proc = proc
         self.pid = proc.pid
@@ -1099,29 +1185,99 @@ def _bot_env():
     return env
 
 
+def _choose_python(dir_path, want_venv, quiet=False):
+    """(python_exe, venv_dir, is_venv) либо None, если запускать нечем."""
+    if want_venv:
+        py, vdir = ensure_venv(dir_path, quiet=quiet)
+        if py:
+            return py, vdir, True
+        if SETTINGS["venv_fallback"]:
+            print(f"{Fore.YELLOW}⚠ venv недоступен — запускаю в глобальном Python (venv_fallback).")
+            return _global_python(), None, False
+        print(f"{Fore.RED}❌ Не удалось подготовить venv (venv_fallback выключен).")
+        return None
+    return _global_python(), None, False
+
+
+def _launch_bot_window(name, want_venv, install_deps, append_log, restarts):
+    """
+    Открывает отдельное окно консоли (Windows: новая консоль; Linux: терминал / tmux),
+    а в нём — обёртку `kail_admin.py --botrun`: она сама ставит библиотеки, запускает бота
+    с живым вводом/выводом (как руками) и дублирует вывод в лог. Возвращает Bot или None.
+    """
+    token = f"{os.getpid()}_{int(time.time() * 1000)}_{random.randint(100, 999)}"
+    stem = re.sub(r'[^\w\-]', '_', os.path.splitext(os.path.basename(name))[0])[:20] or 'bot'
+    args = [_global_python(), SCRIPT_PATH, '--botrun', name, '--bot-id', token,
+            '--parent-pid', str(os.getpid()),
+            '--venv', '1' if want_venv else '0',
+            '--deps', '1' if install_deps else '0',
+            '--append', '1' if append_log else '0']
+    try:
+        os.makedirs(BOT_DIR, exist_ok=True)
+    except OSError:
+        pass
+
+    proc = None
+    if IS_WIN:
+        try:
+            launcher = subprocess.Popen(args, cwd=BASE_DIR, close_fds=True,
+                                        creationflags=subprocess.CREATE_NEW_CONSOLE)
+        except Exception as e:
+            log_error(f"Не открыть окно бота: {e}", show=False)
+            return None
+        cand = WindowProc(token, launcher, via='console')
+        if cand.wait_registered(15):
+            proc = cand
+        else:
+            terminate_tree(launcher.pid, grace=0, proc=launcher)
+            cand.cleanup()
+    else:
+        for exe, cmd in _terminal_candidates(args, background=True, detached_tmux=True, title=stem):
+            try:
+                launcher = subprocess.Popen(cmd, cwd=BASE_DIR, stdin=subprocess.DEVNULL,
+                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                            start_new_session=True)
+            except Exception as e:
+                log_error(f"Терминал {exe} не стартовал: {e}", show=False)
+                continue
+            cand = WindowProc(token, launcher, via=exe)
+            if cand.wait_registered(10):
+                proc = cand
+                break
+            if cand.pid:
+                terminate_tree(cand.pid, grace=0.5)
+            cand.cleanup()
+    if proc is None:
+        return None
+
+    bot = Bot(name, proc, None, want_venv, want_venv, log_path_for(name), restarts, window=True)
+    with BOTS_LOCK:
+        BOTS[name] = bot
+    return bot
+
+
 def launch_bot(name, use_venv=None, install_deps=True, append_log=False,
-               restarts=None, quiet=False):
-    """Запускает бота. Возвращает Bot или None. venv — по умолчанию из настроек."""
+               restarts=None, quiet=False, window=None):
+    """Запускает бота. Возвращает Bot или None. venv и окно — по умолчанию из настроек."""
     abs_path = os.path.abspath(name)
     if not os.path.isfile(abs_path):
         log_error(f"Файл {abs_path} не найден!")
         return None
     dir_path = os.path.dirname(abs_path)
     want_venv = SETTINGS["use_venv"] if use_venv is None else bool(use_venv)
+    use_window = SETTINGS["bot_window"] if window is None else bool(window)
 
-    python_exe, venv_dir, is_venv = None, None, False
-    if want_venv:
-        python_exe, venv_dir = ensure_venv(dir_path, quiet=quiet)
-        if python_exe:
-            is_venv = True
-        elif SETTINGS["venv_fallback"]:
-            print(f"{Fore.YELLOW}⚠ venv недоступен — запускаю в глобальном Python (venv_fallback).")
-            python_exe = _global_python()
-        else:
-            print(f"{Fore.RED}❌ Не удалось подготовить venv (venv_fallback выключен).")
-            return None
-    else:
-        python_exe = _global_python()
+    if use_window:
+        bot = _launch_bot_window(name, want_venv, install_deps, append_log, restarts)
+        if bot:
+            return bot
+        print(f"{Fore.YELLOW}⚠ Не удалось открыть окно консоли (нет графического терминала/tmux?) — "
+              f"запускаю в фоне, без ввода с клавиатуры.")
+
+    chosen = _choose_python(dir_path, want_venv, quiet=quiet)
+    if not chosen:
+        return None
+    python_exe, venv_dir, is_venv = chosen
 
     if install_deps:
         try:
@@ -1180,6 +1336,11 @@ def launch_bot(name, use_venv=None, install_deps=True, append_log=False,
 
 def kill_bot_process(bot, force=False):
     grace = 0 if force else SETTINGS["stop_grace"]
+    if isinstance(bot.proc, WindowProc):
+        # обёртка в окне при SIGTERM сама гасит бота и закрывается; добиваем по дереву
+        ok = terminate_tree(bot.pid, grace=grace, group=True)
+        bot.proc.cleanup()
+        return ok
     return terminate_tree(bot.pid, grace=grace, group=True, proc=bot.proc)
 
 
@@ -1271,6 +1432,12 @@ def _monitor_once():
         with BOTS_LOCK:
             if BOTS.get(name) is not old:
                 continue                      # пользователь уже сам что-то сделал
+            if getattr(old.proc, 'user_closed', False):
+                BOTS.pop(name, None)
+                old.proc.cleanup()
+                notify(f"{Fore.YELLOW}ℹ Окно бота {name} закрыто вручную (Ctrl+C / крестик) — "
+                       f"бот остановлен, авто-перезапуска не будет. Запуск: run <num>")
+                continue
             now = time.time()
             recent = [t for t in old.restarts if now - t < 600]
             if len(recent) >= SETTINGS["max_restarts"]:
@@ -1283,7 +1450,8 @@ def _monitor_once():
             old.restarts = deque(recent, maxlen=50)
             notify(f"{Fore.RED}⚠ Бот {name} упал (код {old.returncode}), перезапускаем...")
             new = launch_bot(name, use_venv=old.want_venv, install_deps=False,
-                             append_log=True, restarts=old.restarts, quiet=True)
+                             append_log=True, restarts=old.restarts, quiet=True,
+                             window=old.window)
             if new:
                 notify(f"{Fore.GREEN}✅ Бот {name} перезапущен (PID {new.pid})")
             else:
@@ -1370,15 +1538,37 @@ class ChildTerm:
         return ok
 
 
-def _terminal_candidates(args):
-    """Список (имя, команда) способов открыть новое окно терминала на Linux/macOS."""
+def _terminal_candidates(args, background=False, detached_tmux=False, title='kail'):
+    """
+    Список (имя, команда) способов открыть новое окно терминала на Linux/macOS.
+    Порядок: окно tmux (если мы внутри tmux) -> графический терминал -> фоновая сессия tmux «kail»
+    (для серверов без GUI / по SSH: посмотреть можно командой `tmux attach -t kail`).
+    """
     cands = []
-    term_env = os.environ.get('TERMINAL')
     if os.environ.get('TMUX') and shutil.which('tmux'):
-        cands.append(('tmux', ['tmux', 'new-window', '-n', 'kail', _join_cmd(args)]))
-    has_gui = bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'))
-    if not has_gui:
-        return cands
+        cands.append(('tmux', ['tmux', 'new-window'] + (['-d'] if background else [])
+                      + ['-n', title, _join_cmd(args)]))
+    in_ssh = bool(os.environ.get('SSH_CONNECTION') or os.environ.get('SSH_CLIENT'))
+    has_gui = bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')) and not in_ssh
+    if has_gui:
+        cands += _gui_terminal_candidates(args, os.environ.get('TERMINAL'))
+    if detached_tmux and not os.environ.get('TMUX') and shutil.which('tmux'):
+        try:
+            has = subprocess.run(['tmux', 'has-session', '-t', 'kail'], capture_output=True,
+                                 stdin=subprocess.DEVNULL, timeout=10).returncode == 0
+        except Exception:
+            has = False
+        if has:
+            cands.append(('tmux-detached', ['tmux', 'new-window', '-d', '-t', 'kail:', '-n', title,
+                                            _join_cmd(args)]))
+        else:
+            cands.append(('tmux-detached', ['tmux', 'new-session', '-d', '-s', 'kail', '-n', title,
+                                            _join_cmd(args)]))
+    return cands
+
+
+def _gui_terminal_candidates(args, term_env):
+    cands = []
     if term_env and shutil.which(term_env):
         cands.append((term_env, [term_env, '-e'] + args))
     table = [
@@ -1456,7 +1646,7 @@ def spawn_child_terminal(action):
 
 def _sweep_child_registry(only_parent=None):
     """Чистит реестр дочерних окон. only_parent — убить всех детей этого родителя (при выходе)."""
-    for fp in glob.glob(os.path.join(CHILD_DIR, '*.json')):
+    for fp in (glob.glob(os.path.join(CHILD_DIR, '*.json')) + glob.glob(os.path.join(BOT_DIR, '*.json'))):
         d = _read_json(fp, retries=1)
         if not d:
             try:
@@ -1689,7 +1879,7 @@ def action_list(state=None):
         b = extra.get(str(i))
         if b is not None:
             if is_run:
-                tail = f" {Fore.LIGHTBLACK_EX}PID {b.pid}{' venv' if b.venv else ''}"
+                tail = f" {Fore.LIGHTBLACK_EX}PID {b.pid}{' venv' if b.venv else ''}{' окно' if b.window else ''}"
             else:
                 tail = f" {Fore.LIGHTBLACK_EX}(упал, код {b.returncode})"
         print(f"  {Fore.WHITE}{i}. {f} {status}{tail}")
@@ -2200,6 +2390,8 @@ def show_help():
   {Fore.GREEN}run <num>               {Fore.WHITE}- запустить бота (venv — по настройке use_venv, по умолчанию ВКЛ)
   {Fore.GREEN}run <num> -venv-        {Fore.WHITE}- запустить в отдельном venv
   {Fore.GREEN}run <num> -novenv-      {Fore.WHITE}- запустить в глобальном Python
+  {Fore.GREEN}run <num> -window-      {Fore.WHITE}- запустить в отдельном окне консоли (по умолчанию — настройка bot_window)
+  {Fore.GREEN}run <num> -nowindow-    {Fore.WHITE}- запустить в фоне, без окна
   {Fore.GREEN}allrun                  {Fore.WHITE}- запустить всех
   {Fore.GREEN}stop <num>              {Fore.WHITE}- остановить бота
   {Fore.GREEN}stopall                 {Fore.WHITE}- остановить всех
@@ -2483,6 +2675,275 @@ def run_child_mode():
 
 
 # ======================================================================
+#  Окно бота (--botrun): как ручной запуск, плюс копия вывода в лог
+# ======================================================================
+_NOMOD_RE = re.compile(r"No module named ['\"]([\w\.\-]+)['\"]")
+
+
+def _missing_module_from(text, dir_path):
+    """Из хвоста вывода достаёт имя модуля, которого не хватило (ModuleNotFoundError)."""
+    found = _NOMOD_RE.findall(text or '')
+    if not found:
+        return None
+    top = found[-1].split('.')[0]
+    if not top or top in STDLIB_SAFE or _is_local_module(top, {dir_path, os.getcwd()}):
+        return None
+    return top
+
+
+def _wait_interruptible(proc, holder):
+    """Ждёт бота. Ctrl+C в окне = остановить бота (второй раз — убить сразу)."""
+    while True:
+        try:
+            return proc.wait()
+        except KeyboardInterrupt:
+            holder['stop'] = True
+            print(f"\n{Fore.YELLOW}Ctrl+C — останавливаю бота (ещё раз Ctrl+C — убить сразу)...")
+            try:
+                return proc.wait(timeout=8)
+            except (KeyboardInterrupt, subprocess.TimeoutExpired):
+                terminate_tree(proc.pid, grace=0, proc=proc)
+                try:
+                    return proc.wait(timeout=3)
+                except Exception:
+                    return -9
+
+
+def _run_bot_mode_impl():
+    import codecs
+    name = _argval('--botrun')
+    token = _argval('--bot-id')
+    try:
+        parent_pid = int(_argval('--parent-pid', 0))
+    except (TypeError, ValueError):
+        parent_pid = 0
+    want_venv = _argval('--venv', '1') == '1'
+    want_deps = _argval('--deps', '1') == '1'
+    append = _argval('--append', '0') == '1'
+    abs_path = os.path.abspath(name)
+    dir_path = os.path.dirname(abs_path)
+    stem = os.path.splitext(os.path.basename(name))[0]
+    _set_title(f"Kail bot: {stem}")
+    _ensure_log_dir()
+
+    # --- регистрация: менеджер узнаёт НАСТОЯЩИЙ PID окна и код завершения ---
+    reg_path = os.path.join(BOT_DIR, token + '.json') if token else None
+    ct = None
+    if psutil:
+        try:
+            ct = psutil.Process().create_time()
+        except Exception:
+            pass
+    reg = {"pid": os.getpid(), "name": name, "parent": parent_pid, "ctime": ct,
+           "started": time.time(), "exit": None, "closed": False}
+
+    def reg_update(**kw):
+        reg.update(kw)
+        if reg_path:
+            try:
+                os.makedirs(BOT_DIR, exist_ok=True)
+            except OSError:
+                pass
+            _atomic_write_json(reg_path, reg)
+
+    reg_update()
+    holder = {'proc': None, 'stop': False}
+
+    def kill_child():
+        p = holder['proc']
+        if p is not None and p.poll() is None:
+            terminate_tree(p.pid, grace=2.0, proc=p)
+
+    def on_exit(signum=None, frame=None):       # SIGTERM от менеджера / закрыли окно (SIGHUP, крестик)
+        try:
+            kill_child()
+            reg_update(exit=-2, closed=True)
+        finally:
+            os._exit(0)
+
+    _install_exit_handlers(on_exit)
+
+    def watchdog():                             # менеджер умер — бот не должен жить сиротой
+        interval = max(1, int(SETTINGS.get("child_check_interval", 3)))
+        while True:
+            time.sleep(interval)
+            if parent_pid and not pid_alive(parent_pid):
+                try:
+                    kill_child()
+                finally:
+                    try:
+                        if reg_path:
+                            os.remove(reg_path)
+                    except Exception:
+                        pass
+                    os._exit(0)
+
+    threading.Thread(target=watchdog, daemon=True).start()
+
+    # --- лог: создаём сразу, чтобы `logs <num>` работал уже во время установки библиотек ---
+    log_path = log_path_for(name)
+    mode = 'ab' if append else 'wb'
+    try:
+        if append and os.path.getsize(log_path) > 20 * 1024 * 1024:
+            mode = 'wb'
+    except OSError:
+        pass
+    lf = open(log_path, mode)
+
+    def lw(text):
+        try:
+            lf.write(text.encode('utf-8', 'replace'))
+            lf.flush()
+        except Exception:
+            pass
+
+    def stamp():
+        return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    lw(("\n" if mode == 'ab' else "") + f"=== Логи {name} | старт {stamp()} ===\n")
+
+    clear_screen()
+    print(_box([
+        (f"БОТ — {name}".center(62), Fore.LIGHTGREEN_EX),
+        (f"  Менеджер: {parent_pid:<10}  Окно (PID): {os.getpid():<12}", Fore.WHITE),
+        (f"  Лог: {log_path}", Fore.LIGHTCYAN_EX),
+    ], color=Fore.GREEN))
+    print(f"{Fore.MAGENTA}  Ctrl+C — остановить бота. Закрытие окна тоже останавливает бота.\n")
+
+    def finish(rc, closed=False):
+        lw(f"\n=== Бот завершён, код {rc} | {stamp()} ===\n")
+        try:
+            lf.close()
+        except Exception:
+            pass
+        reg_update(exit=rc, closed=closed)
+
+    chosen = _choose_python(dir_path, want_venv)
+    if not chosen:
+        lw("Не удалось подготовить Python/venv.\n")
+        finish(-1)
+        print(f"{Fore.RED}❌ Не удалось подготовить Python/venv. Закроется через "
+              f"{SETTINGS['window_hold']} с.")
+        time.sleep(SETTINGS['window_hold'])
+        return
+    python_exe, venv_dir, is_venv = chosen
+
+    if want_deps:
+        try:
+            install_dependencies(python_exe, dir_path, abs_path, is_venv, venv_dir)
+        except KeyboardInterrupt:
+            print(f"\n{Fore.YELLOW}Установка прервана — запускаю как есть.")
+        except Exception as e:
+            log_error(f"Ошибка установки зависимостей: {e}", show=False)
+            print(f"{Fore.YELLOW}⚠ Установка зависимостей прервалась ({e}) — пробую запустить как есть.")
+
+    tried, attempt, rc = set(), 0, None
+    while True:
+        attempt += 1
+        tag = ' [venv]' if is_venv else ''
+        lw(f"Команда{tag}: {python_exe} -u {abs_path}\nРабочая папка: {dir_path}\n"
+           + "=" * 50 + "\n\n")
+        print(f"{Fore.CYAN}▶ Запуск {name}{tag}...\n")
+        try:
+            proc = subprocess.Popen([python_exe, '-u', abs_path], cwd=dir_path,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    env=_bot_env())          # stdin наследуется: input() работает
+        except Exception as e:
+            print(f"{Fore.RED}❌ Не удалось запустить: {e}")
+            lw(f"Не удалось запустить: {e}\n")
+            log_error(f"botrun {name}: {e}", show=False)
+            rc = -1
+            break
+        holder['proc'] = proc
+        chunks = []
+        dec = codecs.getincrementaldecoder('utf-8')('replace')
+
+        def pump(p=proc, d=dec, buf=chunks):
+            fd = p.stdout.fileno()
+            while True:
+                try:
+                    data = os.read(fd, 8192)
+                except OSError:
+                    break
+                if not data:
+                    break
+                lw_bytes(data)
+                text = d.decode(data)
+                if text:
+                    try:
+                        sys.stdout.write(text)
+                        sys.stdout.flush()
+                    except Exception:
+                        pass
+                    buf.append(text)
+                    if len(buf) > 60:
+                        del buf[:-60]
+
+        def lw_bytes(data):
+            try:
+                lf.write(data)
+                lf.flush()
+            except Exception:
+                pass
+
+        pt = threading.Thread(target=pump, daemon=True)
+        pt.start()
+        try:
+            rc = _wait_interruptible(proc, holder)
+        finally:
+            kill_child()
+        pt.join(2)
+        tail = ''.join(chunks)[-8000:]
+
+        if holder['stop'] or rc == 0:
+            break
+        mod = _missing_module_from(tail, dir_path)
+        if mod and SETTINGS["auto_install_deps"] and mod not in tried and attempt <= 8:
+            tried.add(mod)
+            pip_name = PIP_NAME_MAP.get(mod, mod)
+            print(f"\n{Fore.YELLOW}⚠ Боту не хватило модуля '{mod}' — ставлю {pip_name} и запускаю снова...")
+            lw(f"\n[kail] не хватает модуля {mod} — pip install {pip_name}\n")
+            ok, out = pip_install(python_exe, [pip_name], cwd=dir_path, is_venv=is_venv, timeout=900)
+            if ok:
+                print(f"{Fore.GREEN}✅ {pip_name} установлен.\n")
+                lw(f"[kail] {pip_name} установлен, перезапуск\n\n")
+                continue
+            print(f"{Fore.RED}❌ Не удалось установить {pip_name}")
+            lw(f"[kail] не удалось установить {pip_name}: {out[-300:]}\n")
+            log_error(f"pip fail {pip_name}: {out[-300:]}", show=False)
+        break
+
+    closed = holder['stop']
+    rc = -1 if rc is None else rc
+    finish(rc, closed)
+    color = Fore.GREEN if rc == 0 else Fore.RED
+    print(f"\n{color}■ Бот {name} завершился (код {rc}).")
+    hold = 2
+    if rc != 0 and not closed:
+        hold = SETTINGS.get('window_hold', 10)
+        print(f"{Fore.LIGHTBLACK_EX}Окно закроется через {hold} с. Полный лог: {log_path}  "
+              f"(в менеджере: logs <num>)")
+    end = time.time() + hold
+    try:
+        while time.time() < end:
+            time.sleep(0.2)
+    except KeyboardInterrupt:
+        pass
+
+
+def run_bot_mode():
+    try:
+        _run_bot_mode_impl()
+    except SystemExit:
+        raise
+    except Exception:
+        tb = traceback.format_exc()
+        log_error(f"botrun crash: {tb}", show=False)
+        print(f"{Fore.RED}{tb}")
+        time.sleep(10)
+
+
+# ======================================================================
 #  Загрузочный экран и зависимости самого менеджера
 # ======================================================================
 def _boot_sequence():
@@ -2614,11 +3075,11 @@ def cleanup():
         log_error(f"Не удалось удалить state: {e}", show=False)
 
 
-def _install_exit_handlers():
+def _install_exit_handlers(on_exit=None):
     """Закрыли окно / kill / logoff — боты останавливаются, а не остаются «осиротевшими»."""
     def graceful(signum=None, frame=None):
         try:
-            cleanup()
+            (on_exit or cleanup)()
         finally:
             os._exit(0)
 
@@ -2709,7 +3170,7 @@ def _bot_by_arg(parts, example):
     return num, name
 
 
-def _start_bot(num, name, use_venv=None):
+def _start_bot(num, name, use_venv=None, window=None):
     with BOTS_LOCK:
         was = name in BOTS
     if was:
@@ -2720,10 +3181,15 @@ def _start_bot(num, name, use_venv=None):
         print(f"{Fore.MAGENTA}Запуск {name} в изолированном venv...")
     else:
         print(f"{Fore.CYAN}Запуск {name}...")
-    bot = launch_bot(name, use_venv=use_venv)
+    bot = launch_bot(name, use_venv=use_venv, window=window)
     if bot:
         tag = " [venv]" if bot.venv else ""
+        if bot.window:
+            tag += " [окно]"
         print(f"{Fore.GREEN}✅ Бот {num} запущен{tag} (PID {bot.pid})")
+        if bot.window and getattr(bot.proc, 'via', '') == 'tmux-detached':
+            print(f"{Fore.LIGHTBLACK_EX}   Консоль бота — в tmux-сессии: {Fore.GREEN}tmux attach -t kail"
+                  f"{Fore.LIGHTBLACK_EX}  (выйти, не останавливая: Ctrl+B, затем D)")
         save_state()
         if SETTINGS["auto_open_logs"]:
             try:
@@ -2771,7 +3237,8 @@ def handle_command(cmd):
         if r:
             flags = [p.lower() for p in parts[2:]]
             use_venv = True if '-venv-' in flags else (False if '-novenv-' in flags else None)
-            _start_bot(r[0], r[1], use_venv)
+            use_window = True if '-window-' in flags else (False if '-nowindow-' in flags else None)
+            _start_bot(r[0], r[1], use_venv, use_window)
         return True
 
     if command == 'allrun':
@@ -2840,7 +3307,7 @@ def handle_command(cmd):
             time.sleep(0.5)
         else:
             print(f"{Fore.LIGHTBLACK_EX}(бот не был запущен — просто запускаю)")
-        bot = launch_bot(name, use_venv=want)
+        bot = launch_bot(name, use_venv=want, window=(old.window if old else None))
         if bot:
             print(f"{Fore.GREEN}✅ Бот {num} перезапущен (PID {bot.pid})")
             save_state()
@@ -2932,6 +3399,10 @@ def handle_command(cmd):
 def main():
     _enable_windows_ansi()
     load_settings()
+
+    if '--botrun' in sys.argv:
+        run_bot_mode()
+        return
 
     if '--child' in sys.argv:
         run_child_mode()
