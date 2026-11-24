@@ -179,8 +179,10 @@ STATE_FILE = "kail_state.json"
 ERROR_LOG_FILE = "kail_errors.log"
 CHILD_DIR = "kail_children"
 BOT_DIR = "kail_bots"          # реестр окон ботов (PID, код выхода)
+BINDS_FILE = "kail_binds.json" # привязанные боты из других папок (сохраняются между запусками)
 
 DEFAULT_SETTINGS = {
+    "auto_system_packages": True,
     "bot_window": True,
     "window_hold": 10,
     "monitor_interval": 30,
@@ -199,6 +201,7 @@ DEFAULT_SETTINGS = {
 }
 
 SETTINGS_DESCRIPTIONS = {
+    "auto_system_packages":  "Linux: если нет venv/pip — поставить python3-venv/pip через apt/dnf (нужен root или sudo без пароля, иначе спросит).",
     "bot_window":            "Каждый бот — в своём окне консоли (Linux/Windows), как при ручном запуске. Вывод пишется и в лог.",
     "window_hold":           "Сколько секунд окно бота остаётся открытым после его падения (прочитать ошибку).",
     "monitor_interval":      "Интервал проверки ботов (секунд).",
@@ -322,9 +325,10 @@ def _read_json(path, retries=3):
 # ======================================================================
 #  Глобальное состояние
 # ======================================================================
-VERSION = "v23112026.2045"
+VERSION = "v241126.1643"
 PRODUCT_NAME = "Kail Admin"
 
+BINDS = []                     # абсолютные пути привязанных ботов
 BOTS = {}                      # имя файла -> Bot
 BOTS_LOCK = threading.RLock()  # сериализует запуск/остановку (пользователь + монитор)
 STATE_LOCK = threading.Lock()
@@ -670,6 +674,8 @@ def pip_install(python_exe, args, cwd=None, is_venv=True, timeout=900, show=True
     low = out.lower()
     if rc != 0 and 'no module named pip' in low:
         _run_quiet([python_exe, '-m', 'ensurepip', '--upgrade'], timeout=180)
+        if not _pip_works(python_exe):
+            _bootstrap_pip(python_exe)
         rc, out = run_stream(base + list(args), cwd=cwd, timeout=timeout, show=show)
         low = out.lower()
     if rc != 0 and not is_venv:
@@ -971,10 +977,122 @@ def _has_pyvenv_cfg(venv_dir):
     return os.path.isfile(os.path.join(venv_dir, 'pyvenv.cfg'))
 
 
+def _download(url, dest, timeout=90):
+    """Скачивает файл штатным urllib (проверка сертификатов НЕ отключается)."""
+    try:
+        import urllib.request
+        tmp = dest + '.part'
+        with urllib.request.urlopen(url, timeout=timeout) as r, open(tmp, 'wb') as f:
+            shutil.copyfileobj(r, f)
+        os.replace(tmp, dest)
+        return os.path.getsize(dest) > 1000
+    except Exception as e:
+        log_error(f"download {url}: {e}", show=False)
+        return False
+
+
+def _tool_file(fname, url, min_size=1000):
+    """Файл-помощник (virtualenv.pyz, get-pip.py) — лежит в .kail_libs, при отсутствии скачивается."""
+    for d in LIBS_DIRS:
+        p = os.path.join(d, fname)
+        if os.path.isfile(p) and os.path.getsize(p) > min_size:
+            return p
+    for d in LIBS_DIRS:
+        try:
+            os.makedirs(d, exist_ok=True)
+        except OSError:
+            continue
+        p = os.path.join(d, fname)
+        print(f"{Fore.YELLOW}⬇ Скачиваю {fname}...")
+        if _download(url, p) and os.path.getsize(p) > min_size:
+            return p
+    return None
+
+
+def _bootstrap_pip(py):
+    """Нет pip и ensurepip (Debian/Ubuntu без python3-pip): ставим pip через get-pip.py."""
+    gp = _tool_file('get-pip.py', 'https://bootstrap.pypa.io/get-pip.py', 100000)
+    if not gp:
+        return False
+    for extra in (['--user', '--break-system-packages'], ['--user'], []):
+        run_stream([py, gp] + extra, timeout=300)
+        if _pip_works(py):
+            return True
+    return False
+
+
+def _ask_timeout(prompt, timeout=60):
+    """Вопрос с таймаутом (Linux): никто не ответил — считаем «нет», окно бота не зависает навсегда."""
+    try:
+        import select
+        sys.stdout.write(prompt)
+        sys.stdout.flush()
+        r, _, _ = select.select([sys.stdin], [], [], timeout)
+        if r:
+            return sys.stdin.readline().strip().lower()
+    except Exception:
+        pass
+    print()
+    return 'n'
+
+
+def _linux_install_python_tools():
+    """Linux: ставит python3-venv / pip системным менеджером пакетов. True — команда прошла."""
+    if IS_WIN or threading.current_thread() is not threading.main_thread():
+        return False
+    table = [('apt-get', ['apt-get', 'install', '-y', 'python3-venv', 'python3-pip']),
+             ('dnf', ['dnf', 'install', '-y', 'python3-pip']),
+             ('yum', ['yum', 'install', '-y', 'python3-pip']),
+             ('pacman', ['pacman', '-S', '--noconfirm', 'python-pip']),
+             ('zypper', ['zypper', '--non-interactive', 'install', 'python3-pip']),
+             ('apk', ['apk', 'add', 'python3', 'py3-pip'])]
+    cmd = None
+    for exe, c in table:
+        if shutil.which(exe):
+            cmd = c
+            break
+    if not cmd:
+        return False
+    silent = False
+    if _is_root():
+        silent = True
+    elif shutil.which('sudo'):
+        try:
+            silent = subprocess.run(['sudo', '-n', 'true'], capture_output=True, timeout=15,
+                                    stdin=subprocess.DEVNULL).returncode == 0
+        except Exception:
+            silent = False
+    print(f"{Fore.YELLOW}Не хватает системных пакетов Python (venv/pip): {' '.join(cmd)}")
+    if not (silent and SETTINGS.get("auto_system_packages", True)):
+        if _ask_timeout(f"{Fore.YELLOW}Установить сейчас? (Y/n, 60 с): {Fore.WHITE}") in ('n', 'no', 'н', 'нет'):
+            return False
+    prefix = _sudo_prefix()
+    if prefix is None:
+        return False
+    if cmd[0] == 'apt-get':
+        _run_inherit(prefix + ['apt-get', 'update'], timeout=300)
+    return _run_inherit(prefix + cmd, timeout=900) == 0
+
+
+def _venv_finish(venv_dir):
+    """venv создан? Есть ли в нём pip? Возвращает python venv или None."""
+    vpy = _venv_python(venv_dir)
+    if not (os.path.exists(vpy) and _python_works(vpy)):
+        return None
+    if not _pip_works(vpy):
+        _run_quiet([vpy, '-m', 'ensurepip', '--upgrade'], timeout=180)
+    if not _pip_works(vpy):
+        return None
+    _run_quiet([vpy, '-m', 'pip', 'install', '--upgrade', 'pip', '--quiet',
+                '--disable-pip-version-check'], timeout=180)
+    return vpy
+
+
 def ensure_venv(dir_path, quiet=False):
     """
     Возвращает (python_venv, venv_dir) или (None, None).
-    Обходные пути: битый venv пересоздаётся; нет ensurepip (Debian/Ubuntu) -> virtualenv.
+    Цепочка обходных путей: venv -> virtualenv (модуль) -> virtualenv.pyz (качается сам, pip и
+    python3-venv не нужны) -> установка python3-venv системным пакетным менеджером.
     """
     venv_dir = _venv_dir_for(dir_path)
     vpy = _venv_python(venv_dir)
@@ -986,6 +1104,7 @@ def ensure_venv(dir_path, quiet=False):
     if os.path.isdir(venv_dir) and _has_pyvenv_cfg(venv_dir):
         print(f"{Fore.YELLOW}⚠ venv повреждён (обновился Python / перенесли папку?) — пересоздаю...")
         _rmtree(venv_dir)
+    existed = os.path.isdir(venv_dir)
 
     print(f"{Fore.YELLOW}Создаю venv в {venv_dir}...")
     bases = _base_pythons()
@@ -993,42 +1112,56 @@ def ensure_venv(dir_path, quiet=False):
         print(f"{Fore.RED}❌ Не найден рабочий Python для создания venv.")
         return None, None
 
-    last_out = ''
-    for bp in bases:
-        rc, out = run_stream([bp, '-m', 'venv', venv_dir], timeout=300)
-        vpy = _venv_python(venv_dir)
-        if rc == 0 and os.path.exists(vpy):
-            if not _pip_works(vpy):
-                _run_quiet([vpy, '-m', 'ensurepip', '--upgrade'], timeout=180)
-            if _pip_works(vpy):
-                _run_quiet([vpy, '-m', 'pip', 'install', '--upgrade', 'pip', '--quiet',
-                            '--disable-pip-version-check'], timeout=180)
-                print(f"{Fore.GREEN}✅ venv создан: {venv_dir}")
-                return vpy, venv_dir
-        last_out = out
-        if _has_pyvenv_cfg(venv_dir):
+    state = {'out': ''}
+
+    def attempt(cmd):
+        rc, out = run_stream(cmd, timeout=300)
+        vp = _venv_finish(venv_dir) if rc == 0 else None
+        if vp:
+            return vp
+        state['out'] = out or state['out']
+        if os.path.isdir(venv_dir) and (_has_pyvenv_cfg(venv_dir) or not existed):
             _rmtree(venv_dir)
+        return None
+
+    for bp in bases:
+        vp = attempt([bp, '-m', 'venv', venv_dir])
+        if vp:
+            print(f"{Fore.GREEN}✅ venv создан: {venv_dir}")
+            return vp, venv_dir
 
     print(f"{Fore.YELLOW}⚠ Стандартный venv не создался "
           f"{'(на Debian/Ubuntu: apt install python3-venv)' if not IS_WIN else ''} — пробую virtualenv...")
-    if last_out:
-        for line in last_out.strip().splitlines()[-2:]:
-            print(f"{Fore.LIGHTBLACK_EX}   {line}")
+    for line in state['out'].strip().splitlines()[-2:]:
+        print(f"{Fore.LIGHTBLACK_EX}   {line}")
     for bp in bases:
         ok, _ = _run_quiet([bp, '-m', 'virtualenv', '--version'], timeout=60)
         if not ok:
             ok, _ = pip_install(bp, ['virtualenv'], is_venv=False, timeout=300)
         if not ok:
             continue
-        rc, out = run_stream([bp, '-m', 'virtualenv', venv_dir], timeout=300)
-        vpy = _venv_python(venv_dir)
-        if rc == 0 and os.path.exists(vpy) and _python_works(vpy):
+        vp = attempt([bp, '-m', 'virtualenv', venv_dir])
+        if vp:
             print(f"{Fore.GREEN}✅ venv создан через virtualenv: {venv_dir}")
-            return vpy, venv_dir
-        if _has_pyvenv_cfg(venv_dir):
-            _rmtree(venv_dir)
+            return vp, venv_dir
 
-    log_error(f"Не удалось создать venv в {venv_dir}: {last_out[-300:]}", show=False)
+    pyz = _tool_file('virtualenv.pyz', 'https://bootstrap.pypa.io/virtualenv.pyz', 100000)
+    if pyz:
+        for bp in bases:
+            vp = attempt([bp, pyz, venv_dir])
+            if vp:
+                print(f"{Fore.GREEN}✅ venv создан через virtualenv.pyz: {venv_dir}")
+                return vp, venv_dir
+
+    if not IS_WIN and _linux_install_python_tools():
+        importlib.invalidate_caches()
+        for bp in bases:
+            vp = attempt([bp, '-m', 'venv', venv_dir])
+            if vp:
+                print(f"{Fore.GREEN}✅ venv создан: {venv_dir}")
+                return vp, venv_dir
+
+    log_error(f"Не удалось создать venv в {venv_dir}: {state['out'][-300:]}", show=False)
     return None, None
 
 
@@ -1138,6 +1271,8 @@ class Bot:
 
 def log_path_for(name):
     stem = os.path.splitext(os.path.basename(name))[0]
+    if os.path.isabs(name):      # привязанный бот: папка в имени лога, чтобы main.py из разных папок не путались
+        stem = re.sub(r'[^\w\-]', '_', os.path.basename(os.path.dirname(name)) or 'root')[:30] + '_' + stem
     return os.path.join(SETTINGS["log_dir"], stem + '.log')
 
 
@@ -1156,6 +1291,9 @@ def scan_files():
     global file_list
     found = set()
     for f in glob.glob('*.py'):
+        if os.path.isfile(f) and not _same_path(f, SCRIPT_PATH):
+            found.add(f)
+    for f in BINDS:
         if os.path.isfile(f) and not _same_path(f, SCRIPT_PATH):
             found.add(f)
     with BOTS_LOCK:
@@ -1199,6 +1337,10 @@ def _choose_python(dir_path, want_venv, quiet=False):
     return _global_python(), None, False
 
 
+def _win_title(name):
+    return re.sub(r'[^\w\-]', '_', os.path.splitext(os.path.basename(name))[0])[:20] or 'bot'
+
+
 def _launch_bot_window(name, want_venv, install_deps, append_log, restarts):
     """
     Открывает отдельное окно консоли (Windows: новая консоль; Linux: терминал / tmux),
@@ -1206,7 +1348,7 @@ def _launch_bot_window(name, want_venv, install_deps, append_log, restarts):
     с живым вводом/выводом (как руками) и дублирует вывод в лог. Возвращает Bot или None.
     """
     token = f"{os.getpid()}_{int(time.time() * 1000)}_{random.randint(100, 999)}"
-    stem = re.sub(r'[^\w\-]', '_', os.path.splitext(os.path.basename(name))[0])[:20] or 'bot'
+    stem = _win_title(name)
     args = [_global_python(), SCRIPT_PATH, '--botrun', name, '--bot-id', token,
             '--parent-pid', str(os.getpid()),
             '--venv', '1' if want_venv else '0',
@@ -1216,6 +1358,19 @@ def _launch_bot_window(name, want_venv, install_deps, append_log, restarts):
         os.makedirs(BOT_DIR, exist_ok=True)
     except OSError:
         pass
+    if not IS_WIN:
+        # tmux-сервер хранит СВОЁ окружение (PATH, токены...), а не наше — передаём окружение файлом
+        env_path = os.path.join(BOT_DIR, token + '.env')
+        try:
+            with open(env_path, 'w', encoding='utf-8') as ef:
+                json.dump(dict(os.environ), ef)
+            try:
+                os.chmod(env_path, 0o600)
+            except OSError:
+                pass
+            args += ['--env-file', env_path]
+        except Exception as e:
+            log_error(f"env-файл: {e}", show=False)
 
     proc = None
     if IS_WIN:
@@ -1373,6 +1528,145 @@ def stop_all_bots():
     return len(items)
 
 
+# ---------- Привязка ботов из других папок ----------
+def load_binds():
+    BINDS.clear()
+    data = _read_json(BINDS_FILE)
+    if isinstance(data, list):
+        for p in data:
+            if isinstance(p, str) and p and p not in BINDS:
+                BINDS.append(p)
+    for p in BINDS:
+        if not os.path.isfile(p):
+            print(f"{Fore.YELLOW}⚠ Привязанный файл не найден: {p}  (уберите: unbind или верните файл)")
+
+
+def save_binds():
+    return _atomic_write_json(BINDS_FILE, list(BINDS))
+
+
+def _clean_path(raw):
+    raw = (raw or '').strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in '"\'':
+        raw = raw[1:-1]
+    return os.path.abspath(os.path.expanduser(os.path.expandvars(raw)))
+
+
+def _bind_file(path):
+    """True — добавлен. Печатает причину, если нет."""
+    if not path.lower().endswith('.py'):
+        print(f"{Fore.RED}Это не .py файл: {path}")
+        return False
+    if _same_path(path, SCRIPT_PATH):
+        print(f"{Fore.RED}Нельзя привязать сам менеджер.")
+        return False
+    if os.path.normcase(os.path.dirname(path)) == os.path.normcase(BASE_DIR):
+        print(f"{Fore.YELLOW}{os.path.basename(path)} лежит рядом с менеджером — он и так в списке.")
+        return False
+    if path in BINDS:
+        print(f"{Fore.YELLOW}Уже привязан: {path}")
+        return False
+    BINDS.append(path)
+    return True
+
+
+def cmd_bind(raw):
+    """bind <путь к .py или к папке с ботом> — привязывает бота; сохраняется между запусками."""
+    if not raw.strip():
+        print(f"{Fore.RED}Пример: bind /home/user/mybot   |   bind /home/user/mybot/main.py   |   bind \"C:\\боты\\tiktok\"")
+        return
+    path = _clean_path(raw)
+    if not os.path.exists(path):
+        print(f"{Fore.RED}Путь не найден: {path}")
+        return
+    added = []
+    if os.path.isfile(path):
+        if _bind_file(path):
+            added.append(path)
+    else:
+        skip = {'setup.py', 'conftest.py', '__init__.py'}
+        cands = sorted(f for f in os.listdir(path)
+                       if f.lower().endswith('.py') and f not in skip
+                       and os.path.isfile(os.path.join(path, f)))
+        if not cands:
+            print(f"{Fore.RED}В папке нет .py файлов: {path}")
+            return
+        if len(cands) == 1:
+            pick = [cands[0]]
+        else:
+            print(f"{Fore.CYAN}В папке несколько скриптов:")
+            for i, f in enumerate(cands, 1):
+                print(f"  {Fore.WHITE}{i}. {f}")
+            try:
+                ans = read_line(f"{Fore.YELLOW}Номер (или несколько через пробел, all — все, Enter — отмена): "
+                                f"{Fore.WHITE}").strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                return
+            if not ans:
+                print(f"{Fore.YELLOW}Отменено.")
+                return
+            if ans == 'all':
+                pick = cands
+            else:
+                pick = []
+                for t in ans.replace(',', ' ').split():
+                    if t.isdigit() and 1 <= int(t) <= len(cands):
+                        pick.append(cands[int(t) - 1])
+                if not pick:
+                    print(f"{Fore.RED}Неверный выбор.")
+                    return
+        for f in pick:
+            full = os.path.join(path, f)
+            if _bind_file(full):
+                added.append(full)
+    if not added:
+        return
+    save_binds()
+    scan_files()
+    save_state()
+    for full in added:
+        n = file_list.index(full) + 1 if full in file_list else '?'
+        print(f"{Fore.GREEN}✅ Привязан как бот {n}: {full}")
+    print(f"{Fore.LIGHTBLACK_EX}Путь сохранён в {BINDS_FILE} — после перезапуска менеджера бот останется в списке.")
+
+
+def cmd_unbind(num_str):
+    try:
+        num = int(num_str)
+    except ValueError:
+        print(f"{Fore.RED}Пример: unbind 3")
+        return
+    name = bot_name(num)
+    if not name:
+        print(f"{Fore.RED}Неверный номер.")
+        return
+    if name not in BINDS:
+        print(f"{Fore.YELLOW}Бот {num} не привязан (лежит рядом с менеджером) — отвязывать нечего.")
+        return
+    with BOTS_LOCK:
+        running_now = name in BOTS
+    if running_now:
+        print(f"{Fore.YELLOW}Останавливаю бота {num}...")
+        stop_bot(name)
+    BINDS.remove(name)
+    save_binds()
+    scan_files()
+    save_state()
+    print(f"{Fore.GREEN}✅ Отвязан: {name} (файл не тронут).")
+
+
+def cmd_binds():
+    if not BINDS:
+        print(f"{Fore.YELLOW}Привязанных ботов нет. Добавить: bind <путь к папке или .py>")
+        return
+    print(f"\n{Fore.CYAN}=== Привязанные боты ({len(BINDS)}) ===\n")
+    for p in BINDS:
+        num = file_list.index(p) + 1 if p in file_list else None
+        st = f"{Fore.GREEN}№{num}" if num else f"{Fore.RED}файл не найден"
+        print(f"  {st}{Fore.WHITE}  {p}")
+    print(f"\n{Fore.LIGHTBLACK_EX}Убрать: {Fore.GREEN}unbind <num>")
+
+
 # ---------- State (для дочерних терминалов) ----------
 def save_state():
     try:
@@ -1448,7 +1742,9 @@ def _monitor_once():
                 continue
             recent.append(now)
             old.restarts = deque(recent, maxlen=50)
-            notify(f"{Fore.RED}⚠ Бот {name} упал (код {old.returncode}), перезапускаем...")
+            tail_lines, _sz = _tail_lines(old.log_path, 6)
+            tail_txt = ''.join(f"\n{Fore.LIGHTBLACK_EX}   │ {ln.rstrip()[:160]}" for ln in tail_lines)
+            notify(f"{Fore.RED}⚠ Бот {name} упал (код {old.returncode}), перезапускаем...{tail_txt}")
             new = launch_bot(name, use_venv=old.want_venv, install_deps=False,
                              append_log=True, restarts=old.restarts, quiet=True,
                              window=old.window)
@@ -1882,7 +2178,8 @@ def action_list(state=None):
                 tail = f" {Fore.LIGHTBLACK_EX}PID {b.pid}{' venv' if b.venv else ''}{' окно' if b.window else ''}"
             else:
                 tail = f" {Fore.LIGHTBLACK_EX}(упал, код {b.returncode})"
-        print(f"  {Fore.WHITE}{i}. {f} {status}{tail}")
+        bind_tag = f" {Fore.LIGHTBLACK_EX}[привязан]" if os.path.isabs(f) else ""
+        print(f"  {Fore.WHITE}{i}. {f}{bind_tag} {status}{tail}")
 
 
 def action_settings_show():
@@ -2076,6 +2373,9 @@ def cmd_rename(num_str, newname):
         stop_bot(old_file)
     try:
         os.rename(old_abs, new_abs)
+        if old_file in BINDS:
+            BINDS[BINDS.index(old_file)] = new_abs
+            save_binds()
         print(f"{Fore.GREEN}✅ Переименовано: {old_file} → {new_file}")
         scan_files()
         save_state()
@@ -2394,10 +2694,19 @@ def show_help():
   {Fore.GREEN}run <num> -nowindow-    {Fore.WHITE}- запустить в фоне, без окна
   {Fore.GREEN}allrun                  {Fore.WHITE}- запустить всех
   {Fore.GREEN}stop <num>              {Fore.WHITE}- остановить бота
-  {Fore.GREEN}stopall                 {Fore.WHITE}- остановить всех
+  {Fore.GREEN}allstop / stopall       {Fore.WHITE}- остановить всех ботов
+  {Fore.GREEN}allrestart              {Fore.WHITE}- перезапустить всех запущенных
   {Fore.GREEN}restart <num>           {Fore.WHITE}- перезапустить бота
   {Fore.GREEN}kill <num>              {Fore.WHITE}- убить принудительно
   {Fore.GREEN}sudo rename <num> to <name>  {Fore.WHITE}- переименовать файл бота
+  {Fore.GREEN}fix <num>               {Fore.WHITE}- пересоздать venv бота и запустить заново
+  {Fore.GREEN}doctor [num]            {Fore.WHITE}- диагностика окружения (и бота) — почему не запускается
+  {Fore.GREEN}attach [num]            {Fore.WHITE}- Linux/tmux: открыть консоль бота (выход: Ctrl+B, D)
+
+{Fore.LIGHTCYAN_EX}══════════ БОТЫ В ДРУГИХ ПАПКАХ ══════════
+  {Fore.GREEN}bind <путь>             {Fore.WHITE}- привязать бота: путь к .py или к папке (запоминается навсегда)
+  {Fore.GREEN}unbind <num>            {Fore.WHITE}- отвязать бота (файл не удаляется)
+  {Fore.GREEN}binds                   {Fore.WHITE}- список привязанных
 
 {Fore.LIGHTCYAN_EX}══════════ ЛОГИ ══════════
   {Fore.GREEN}logs <num>              {Fore.WHITE}- показать логи в консоли
@@ -2711,6 +3020,20 @@ def _wait_interruptible(proc, holder):
 
 def _run_bot_mode_impl():
     import codecs
+    envf = _argval('--env-file')
+    if envf:
+        try:
+            with open(envf, 'r', encoding='utf-8') as ef:
+                for k, v in json.load(ef).items():
+                    if k not in ('TERM', 'TMUX', 'TMUX_PANE', 'COLUMNS', 'LINES'):
+                        os.environ[k] = str(v)
+        except Exception as e:
+            log_error(f"env-файл: {e}", show=False)
+        finally:
+            try:
+                os.remove(envf)
+            except Exception:
+                pass
     name = _argval('--botrun')
     token = _argval('--bot-id')
     try:
@@ -3151,6 +3474,203 @@ def reap_orphans():
 
 
 # ======================================================================
+#  Диагностика и сервис: doctor / fix / attach / allrestart
+# ======================================================================
+def _check_url(url, timeout=8):
+    try:
+        import urllib.request
+        req = urllib.request.Request(url, method='HEAD', headers={'User-Agent': 'kail-admin'})
+        with urllib.request.urlopen(req, timeout=timeout):
+            return True, ''
+    except Exception as e:
+        code = getattr(e, 'code', None)
+        if code:                       # сервер ответил (даже 4xx) — сеть работает
+            return True, ''
+        return False, str(e)[:80]
+
+
+def cmd_doctor(parts):
+    """doctor [num] — проверка окружения; с номером — ещё и проверка конкретного бота."""
+    def ok(t):
+        print(f"  {Fore.GREEN}✔ {Fore.WHITE}{t}")
+
+    def warn(t, hint=''):
+        print(f"  {Fore.YELLOW}⚠ {Fore.WHITE}{t}" + (f"\n      {Fore.LIGHTBLACK_EX}→ {hint}" if hint else ''))
+
+    def bad(t, hint=''):
+        print(f"  {Fore.RED}✘ {Fore.WHITE}{t}" + (f"\n      {Fore.LIGHTBLACK_EX}→ {hint}" if hint else ''))
+
+    print(f"\n{Fore.CYAN}=== ДИАГНОСТИКА ===\n")
+    py = _global_python()
+    v = sys.version_info
+    ok(f"Python {platform.python_version()} ({py})") if v >= (3, 9) else \
+        warn(f"Python {platform.python_version()} — старый", "python-telegram-bot 22+ требует Python 3.9+")
+    if _pip_works(py):
+        ok("pip в системном Python есть")
+    else:
+        warn("pip в системном Python нет", "менеджер поставит pip сам (get-pip.py) или: apt install python3-pip")
+    okv, _o = _run_quiet([py, '-c', 'import venv, ensurepip'], timeout=30)
+    if okv:
+        ok("venv + ensurepip доступны")
+    else:
+        warn("стандартный venv не работает", "менеджер обойдёт через virtualenv.pyz; или: apt install python3-venv")
+    ok("psutil установлен") if psutil else warn("psutil не установлен", f"{py} -m pip install psutil (работает и без него)")
+
+    n1, e1 = _check_url('https://pypi.org/simple/pip/')
+    ok("PyPI доступен (pip сможет ставить библиотеки)") if n1 else bad("PyPI недоступен", f"нет сети/прокси: {e1}")
+    n2, e2 = _check_url('https://api.telegram.org')
+    ok("api.telegram.org доступен") if n2 else bad("api.telegram.org недоступен — боты не подключатся", e2)
+
+    if IS_WIN:
+        ok("Windows: каждый бот открывается в своей консоли")
+    else:
+        names = [c[0] for c in _terminal_candidates(['x'], background=True, detached_tmux=True)]
+        if names:
+            ok(f"Способы открыть окно бота: {', '.join(names)}")
+        else:
+            warn("Нет ни GUI-терминала, ни tmux — боты пойдут в фоне, без ввода с клавиатуры",
+                 "apt install tmux — тогда у каждого бота будет настоящая консоль (tmux attach -t kail)")
+        if _is_root():
+            ok("Запущено от root")
+        elif shutil.which('sudo'):
+            ok("sudo есть")
+        else:
+            warn("sudo нет", "системные пакеты менеджер ставить не сможет")
+    try:
+        os.makedirs(SETTINGS["log_dir"], exist_ok=True)
+        probe = os.path.join(SETTINGS["log_dir"], '.w')
+        with open(probe, 'w') as f:
+            f.write('1')
+        os.remove(probe)
+        ok(f"Папка логов '{SETTINGS['log_dir']}' доступна для записи")
+    except Exception as e:
+        bad("Нельзя писать в папку логов", str(e))
+    try:
+        free = shutil.disk_usage('.').free / (1024 ** 3)
+        ok(f"Свободно на диске: {free:.1f} ГБ") if free > 0.5 else warn(f"Мало места на диске: {free:.2f} ГБ")
+    except Exception:
+        pass
+
+    if len(parts) >= 2:
+        r = _bot_by_arg(parts, "doctor 1")
+        if r:
+            num, name = r
+            ap = os.path.abspath(name)
+            print(f"\n{Fore.CYAN}--- Бот {num}: {name} ---")
+            if not os.path.isfile(ap):
+                bad("Файл не найден")
+                return
+            try:
+                with open(ap, 'rb') as f:
+                    ast.parse(f.read().decode('utf-8-sig', 'replace'))
+                ok("Синтаксис корректен")
+            except SyntaxError as e:
+                bad(f"Синтаксическая ошибка: строка {e.lineno}: {e.msg}", f"Python {platform.python_version()} может не понимать этот код")
+            d = os.path.dirname(ap)
+            ok(f"requirements.txt найден") if os.path.isfile(os.path.join(d, 'requirements.txt')) else \
+                ok("requirements.txt нет — зависимости определяются по import")
+            vd = _venv_dir_for(d)
+            vpy = _venv_python(vd)
+            target = vpy if (os.path.exists(vpy) and _python_works(vpy)) else py
+            ok(f"venv: {vd}") if target == vpy else warn("venv ещё не создан (создастся при запуске)")
+            imps = get_imports(ap)
+            miss = find_missing(target, imps, d) if imps else []
+            if miss is None:
+                warn("Не удалось проверить библиотеки")
+            elif miss:
+                warn(f"Не хватает библиотек: {', '.join(sorted(miss))}", "поставятся при запуске (run) или командой fix")
+            else:
+                ok(f"Все библиотеки на месте ({len(imps)})")
+            lp = resolve_log_path(num)
+            if lp:
+                lines, _sz = _tail_lines(lp, 8)
+                print(f"  {Fore.LIGHTBLACK_EX}Последние строки лога:")
+                for ln in lines:
+                    print(f"    {Fore.LIGHTBLACK_EX}│ {Fore.WHITE}{ln.rstrip()[:150]}")
+    print()
+
+
+def cmd_fix(parts):
+    """fix <num> — пересоздать venv бота с нуля и запустить заново (лечит битые/устаревшие библиотеки)."""
+    r = _bot_by_arg(parts, "fix 1")
+    if not r:
+        return
+    num, name = r
+    d = os.path.dirname(os.path.abspath(name))
+    vd = _venv_dir_for(d)
+    with BOTS_LOCK:
+        others = [n for n, b in BOTS.items()
+                  if n != name and b.alive() and os.path.dirname(os.path.abspath(n)) == d]
+    if others:
+        print(f"{Fore.RED}В этой папке работают другие боты ({', '.join(others)}) — они используют тот же venv. "
+              f"Сначала остановите их.")
+        return
+    print(f"{Fore.YELLOW}Будет удалён venv: {vd} и создан заново, библиотеки поставятся заново.")
+    try:
+        if read_line(f"{Fore.YELLOW}Продолжить? (y/N): ").strip().lower() not in ('y', 'yes', 'д', 'да'):
+            print(f"{Fore.RED}Отменено.")
+            return
+    except (KeyboardInterrupt, EOFError):
+        return
+    with BOTS_LOCK:
+        was = name in BOTS
+    if was:
+        stop_bot(name)
+    if os.path.isdir(vd):
+        _rmtree(vd)
+    _start_bot(num, name)
+
+
+def cmd_attach(parts):
+    """attach [num] — показать консоль бота из tmux (Linux). Выйти, не останавливая бота: Ctrl+B, затем D."""
+    if IS_WIN or not shutil.which('tmux'):
+        print(f"{Fore.YELLOW}attach нужен только для Linux с tmux. На Windows каждый бот уже в своём окне.")
+        return
+    inside = bool(os.environ.get('TMUX'))
+    title = None
+    if len(parts) >= 2:
+        r = _bot_by_arg(parts, "attach 1")
+        if not r:
+            return
+        title = _win_title(r[1])
+    if inside:
+        if title:
+            _run_inherit(['tmux', 'select-window', '-t', title])
+        else:
+            print(f"{Fore.YELLOW}Вы уже внутри tmux — боты открыты окнами этой сессии (Ctrl+B, N — следующее окно).")
+        return
+    has = subprocess.run(['tmux', 'has-session', '-t', 'kail'], capture_output=True,
+                         stdin=subprocess.DEVNULL).returncode == 0
+    if not has:
+        print(f"{Fore.YELLOW}tmux-сессии 'kail' нет: боты запущены в обычных окнах или в фоне.")
+        return
+    if title:
+        subprocess.run(['tmux', 'select-window', '-t', f'kail:{title}'], capture_output=True,
+                       stdin=subprocess.DEVNULL)
+    print(f"{Fore.LIGHTBLACK_EX}Выход обратно в менеджер: Ctrl+B, затем D")
+    _run_inherit(['tmux', 'attach', '-t', 'kail'])
+
+
+def cmd_allrestart():
+    with BOTS_LOCK:
+        items = list(BOTS.items())
+    if not items:
+        print(f"{Fore.RED}Нет запущенных ботов.")
+        return
+    print(f"{Fore.YELLOW}Перезапускаю всех ({len(items)})...")
+    for name, old in items:
+        num = file_list.index(name) + 1 if name in file_list else '?'
+        stop_bot(name)
+        time.sleep(0.5)
+        bot = launch_bot(name, use_venv=old.want_venv, window=old.window)
+        if bot:
+            print(f"{Fore.GREEN}✅ Бот {num} перезапущен (PID {bot.pid})")
+        else:
+            print(f"{Fore.RED}❌ Бот {num} не запустился")
+    save_state()
+
+
+# ======================================================================
 #  Команды
 # ======================================================================
 def _bot_by_arg(parts, example):
@@ -3279,7 +3799,7 @@ def handle_command(cmd):
         save_state()
         return True
 
-    if command == 'stopall':
+    if command in ('stopall', 'allstop'):
         with BOTS_LOCK:
             nums = [i for i, n in enumerate(file_list, 1) if n in BOTS]
         if not nums:
@@ -3291,6 +3811,30 @@ def handle_command(cmd):
             print(f"  Бот {n} остановлен.")
         print(f"{Fore.GREEN}✅ Все остановлены.")
         save_state()
+        return True
+
+    if command == 'allrestart':
+        cmd_allrestart()
+        return True
+
+    if command == 'bind':
+        rest = cmd.split(None, 1)
+        cmd_bind(rest[1] if len(rest) > 1 else '')
+        return True
+    if command == 'unbind':
+        cmd_unbind(parts[1] if len(parts) > 1 else '')
+        return True
+    if command == 'binds':
+        cmd_binds()
+        return True
+    if command == 'doctor':
+        cmd_doctor(parts)
+        return True
+    if command == 'fix':
+        cmd_fix(parts)
+        return True
+    if command == 'attach':
+        cmd_attach(parts)
         return True
 
     if command == 'restart':
@@ -3417,6 +3961,7 @@ def main():
 
     _boot_loader(SETTINGS["boot_animation"])
 
+    load_binds()
     scan_files()
     reap_orphans()
     show_logo_only()
