@@ -180,6 +180,7 @@ ERROR_LOG_FILE = "kail_errors.log"
 CHILD_DIR = "kail_children"
 BOT_DIR = "kail_bots"          # реестр окон ботов (PID, код выхода)
 BINDS_FILE = "kail_binds.json" # привязанные боты из других папок (сохраняются между запусками)
+PREFS_FILE = "kail_botprefs.json"  # сохранённые параметры запуска ботов (run <num> ... sv)
 
 DEFAULT_SETTINGS = {
     "auto_system_packages": True,
@@ -325,10 +326,11 @@ def _read_json(path, retries=3):
 # ======================================================================
 #  Глобальное состояние
 # ======================================================================
-VERSION = "v241126.1643"
+VERSION = "v251126.2257"
 PRODUCT_NAME = "Kail Admin"
 
 BINDS = []                     # абсолютные пути привязанных ботов
+BOT_PREFS = {}                 # имя бота -> {"venv": bool, "window": bool} (сохранённые параметры запуска)
 BOTS = {}                      # имя файла -> Bot
 BOTS_LOCK = threading.RLock()  # сериализует запуск/остановку (пользователь + монитор)
 STATE_LOCK = threading.Lock()
@@ -1419,8 +1421,7 @@ def launch_bot(name, use_venv=None, install_deps=True, append_log=False,
         log_error(f"Файл {abs_path} не найден!")
         return None
     dir_path = os.path.dirname(abs_path)
-    want_venv = SETTINGS["use_venv"] if use_venv is None else bool(use_venv)
-    use_window = SETTINGS["bot_window"] if window is None else bool(window)
+    want_venv, use_window = effective_opts(name, use_venv, window)
 
     if use_window:
         bot = _launch_bot_window(name, want_venv, install_deps, append_log, restarts)
@@ -1543,6 +1544,126 @@ def load_binds():
 
 def save_binds():
     return _atomic_write_json(BINDS_FILE, list(BINDS))
+
+
+# ---------- Сохранённые параметры запуска ботов ----------
+def load_bot_prefs():
+    BOT_PREFS.clear()
+    data = _read_json(PREFS_FILE)
+    if isinstance(data, dict):
+        for k, v in data.items():
+            if isinstance(k, str) and isinstance(v, dict):
+                clean = {kk: bool(v[kk]) for kk in ('venv', 'window') if kk in v}
+                if clean:
+                    BOT_PREFS[k] = clean
+
+
+def save_bot_prefs():
+    return _atomic_write_json(PREFS_FILE, dict(BOT_PREFS))
+
+
+def effective_opts(name, use_venv=None, window=None):
+    """(venv, window): явный аргумент -> сохранённый для бота -> общие настройки."""
+    p = BOT_PREFS.get(name, {})
+    if use_venv is None:
+        use_venv = p.get('venv', SETTINGS["use_venv"])
+    if window is None:
+        window = p.get('window', SETTINGS["bot_window"])
+    return bool(use_venv), bool(window)
+
+
+def _prefs_text(pf):
+    bits = []
+    if 'venv' in pf:
+        bits.append('venv' if pf['venv'] else 'novenv')
+    if 'window' in pf:
+        bits.append('окно' if pf['window'] else 'фон')
+    return ', '.join(bits)
+
+
+def _parse_run_flags(raw):
+    """Разбор флагов run. Возвращает (use_venv, use_window, save, reset) или None при ошибке."""
+    venv_on = venv_off = win_on = win_off = save = reset = False
+    for f in (x.lower() for x in raw):
+        if f == '-venv-':
+            venv_on = True
+        elif f == '-novenv-':
+            venv_off = True
+        elif f == '-window-':
+            win_on = True
+        elif f == '-nowindow-':
+            win_off = True
+        elif f in ('sv', '-sv-', 'save', '-save-'):
+            save = True
+        elif f in ('-default-', '-reset-'):
+            reset = True
+        else:
+            print(f"{Fore.RED}Неизвестный параметр: {f}")
+            print(f"{Fore.LIGHTBLACK_EX}Доступно: -venv- -novenv- -window- -nowindow- sv -default-")
+            return None
+    if (venv_on and venv_off) or (win_on and win_off):
+        print(f"{Fore.RED}Противоречивые параметры (например -venv- и -novenv- одновременно).")
+        return None
+    use_venv = True if venv_on else (False if venv_off else None)
+    use_window = True if win_on else (False if win_off else None)
+    return use_venv, use_window, save, reset
+
+
+def _apply_run_prefs(num, name, use_venv, use_window, save, reset):
+    """Сохраняет / сбрасывает постоянные параметры запуска бота. Вызывается до запуска."""
+    if reset:
+        if BOT_PREFS.pop(name, None) is not None:
+            save_bot_prefs()
+            print(f"{Fore.GREEN}✅ Бот {num}: сохранённые параметры сброшены — снова по общим настройкам.")
+        else:
+            print(f"{Fore.YELLOW}У бота {num} нет сохранённых параметров.")
+        return
+    if not save:
+        return
+    if use_venv is None and use_window is None:
+        print(f"{Fore.YELLOW}sv: нечего сохранять — укажите параметр, например: run {num} -novenv- sv")
+        return
+    p = BOT_PREFS.setdefault(name, {})
+    if use_venv is not None:
+        p['venv'] = use_venv
+    if use_window is not None:
+        p['window'] = use_window
+    if save_bot_prefs():
+        print(f"{Fore.GREEN}✅ Сохранено для бота {num}: {_prefs_text(p)} "
+              f"{Fore.LIGHTBLACK_EX}(теперь так же при обычном run {num} и после перезапуска менеджера)")
+
+
+def cmd_prefs(parts):
+    """prefs — список сохранённых параметров; prefs reset <num|all> — сбросить."""
+    if len(parts) >= 2 and parts[1].lower() == 'reset':
+        if len(parts) < 3:
+            print(f"{Fore.RED}Пример: prefs reset 2   |   prefs reset all")
+            return
+        if parts[2].lower() == 'all':
+            n = len(BOT_PREFS)
+            BOT_PREFS.clear()
+            save_bot_prefs()
+            print(f"{Fore.GREEN}✅ Сброшено сохранённых параметров: {n}")
+            return
+        r = _bot_by_arg(parts[1:], "prefs reset 2")
+        if not r:
+            return
+        if BOT_PREFS.pop(r[1], None) is not None:
+            save_bot_prefs()
+            print(f"{Fore.GREEN}✅ Параметры бота {r[0]} сброшены.")
+        else:
+            print(f"{Fore.YELLOW}У бота {r[0]} нет сохранённых параметров.")
+        return
+    if not BOT_PREFS:
+        print(f"{Fore.YELLOW}Сохранённых параметров нет. Пример: run 2 -novenv- sv")
+        return
+    print(f"\n{Fore.CYAN}=== Сохранённые параметры запуска ({len(BOT_PREFS)}) ===\n")
+    for name, pf in BOT_PREFS.items():
+        num = file_list.index(name) + 1 if name in file_list else None
+        label = f"{Fore.GREEN}№{num}" if num else f"{Fore.RED}нет в списке"
+        print(f"  {label}{Fore.WHITE}  {name}  {Fore.LIGHTMAGENTA_EX}[{_prefs_text(pf)}]")
+    print(f"\n{Fore.LIGHTBLACK_EX}Сбросить: {Fore.GREEN}prefs reset <num>{Fore.LIGHTBLACK_EX} | {Fore.GREEN}prefs reset all"
+          f"{Fore.LIGHTBLACK_EX} | {Fore.GREEN}run <num> -default-")
 
 
 def _clean_path(raw):
@@ -2179,7 +2300,9 @@ def action_list(state=None):
             else:
                 tail = f" {Fore.LIGHTBLACK_EX}(упал, код {b.returncode})"
         bind_tag = f" {Fore.LIGHTBLACK_EX}[привязан]" if os.path.isabs(f) else ""
-        print(f"  {Fore.WHITE}{i}. {f}{bind_tag} {status}{tail}")
+        pf = BOT_PREFS.get(f)
+        pref_tag = f" {Fore.LIGHTMAGENTA_EX}[{_prefs_text(pf)}*]" if pf else ""
+        print(f"  {Fore.WHITE}{i}. {f}{bind_tag}{pref_tag} {status}{tail}")
 
 
 def action_settings_show():
@@ -2373,9 +2496,13 @@ def cmd_rename(num_str, newname):
         stop_bot(old_file)
     try:
         os.rename(old_abs, new_abs)
-        if old_file in BINDS:
+        was_bound = old_file in BINDS
+        if was_bound:
             BINDS[BINDS.index(old_file)] = new_abs
             save_binds()
+        if old_file in BOT_PREFS:
+            BOT_PREFS[new_abs if was_bound else new_file] = BOT_PREFS.pop(old_file)
+            save_bot_prefs()
         print(f"{Fore.GREEN}✅ Переименовано: {old_file} → {new_file}")
         scan_files()
         save_state()
@@ -2692,6 +2819,12 @@ def show_help():
   {Fore.GREEN}run <num> -novenv-      {Fore.WHITE}- запустить в глобальном Python
   {Fore.GREEN}run <num> -window-      {Fore.WHITE}- запустить в отдельном окне консоли (по умолчанию — настройка bot_window)
   {Fore.GREEN}run <num> -nowindow-    {Fore.WHITE}- запустить в фоне, без окна
+  {Fore.GREEN}run <num> <флаги> sv    {Fore.WHITE}- ЗАПОМНИТЬ флаги для этого бота (напр. run 2 -novenv- sv) —
+                          {Fore.WHITE}  дальше обычный run 2 / restart / allrun / авто-перезапуск идут так же,
+                          {Fore.WHITE}  и после перезапуска менеджера тоже ({PREFS_FILE})
+  {Fore.GREEN}run <num> -default-     {Fore.WHITE}- сбросить сохранённое и запустить по общим настройкам
+  {Fore.GREEN}prefs                   {Fore.WHITE}- список сохранённых параметров ботов
+  {Fore.GREEN}prefs reset <num|all>   {Fore.WHITE}- сбросить сохранённые параметры
   {Fore.GREEN}allrun                  {Fore.WHITE}- запустить всех
   {Fore.GREEN}stop <num>              {Fore.WHITE}- остановить бота
   {Fore.GREEN}allstop / stopall       {Fore.WHITE}- остановить всех ботов
@@ -3696,7 +3829,7 @@ def _start_bot(num, name, use_venv=None, window=None):
     if was:
         print(f"{Fore.YELLOW}Перезапускаю бота {num}...")
         stop_bot(name)
-    mode_venv = SETTINGS["use_venv"] if use_venv is None else use_venv
+    mode_venv, _w = effective_opts(name, use_venv, window)
     if mode_venv:
         print(f"{Fore.MAGENTA}Запуск {name} в изолированном venv...")
     else:
@@ -3753,11 +3886,15 @@ def handle_command(cmd):
         return True
 
     if command == 'run':
-        r = _bot_by_arg(parts, "run 1  |  run 1 -venv-  |  run 1 -novenv-")
+        r = _bot_by_arg(parts, "run 1  |  run 1 -novenv-  |  run 1 -novenv- sv  (sv — запомнить навсегда)")
         if r:
-            flags = [p.lower() for p in parts[2:]]
-            use_venv = True if '-venv-' in flags else (False if '-novenv-' in flags else None)
-            use_window = True if '-window-' in flags else (False if '-nowindow-' in flags else None)
+            parsed = _parse_run_flags(parts[2:])
+            if parsed is None:
+                return True
+            use_venv, use_window, save, reset = parsed
+            _apply_run_prefs(r[0], r[1], use_venv, use_window, save, reset)
+            if reset:
+                use_venv = use_window = None
             _start_bot(r[0], r[1], use_venv, use_window)
         return True
 
@@ -3826,6 +3963,9 @@ def handle_command(cmd):
         return True
     if command == 'binds':
         cmd_binds()
+        return True
+    if command == 'prefs':
+        cmd_prefs(parts)
         return True
     if command == 'doctor':
         cmd_doctor(parts)
@@ -3943,6 +4083,7 @@ def handle_command(cmd):
 def main():
     _enable_windows_ansi()
     load_settings()
+    load_bot_prefs()
 
     if '--botrun' in sys.argv:
         run_bot_mode()
